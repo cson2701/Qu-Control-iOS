@@ -5,32 +5,56 @@
 //  Created by Chaoran Song on 12/7/2026.
 //
 
+import Combine
 import SwiftUI
 
 struct ContentView: View {
-    @ObservedObject var viewModel: MixerScreenViewModel
+    let viewModel: MixerScreenViewModel
     let isUsingMockConnection: Bool
     let onSetUseMockConnection: (Bool) -> Void
 
+    @StateObject private var chromeModel: ContentChromeModel
     @State private var isShowingSettings = false
     @State private var isShowingShutdownConfirmation = false
+    @State private var isShowingStatusDetails = false
+
+    init(
+        viewModel: MixerScreenViewModel,
+        isUsingMockConnection: Bool,
+        onSetUseMockConnection: @escaping (Bool) -> Void
+    ) {
+        self.viewModel = viewModel
+        self.isUsingMockConnection = isUsingMockConnection
+        self.onSetUseMockConnection = onSetUseMockConnection
+        _chromeModel = StateObject(wrappedValue: ContentChromeModel(viewModel: viewModel))
+    }
 
     var body: some View {
         NavigationStack {
             Group {
-                if viewModel.connectionState.phase == .connected {
-                    connectedContent
+                if chromeModel.connectionState.phase == .connected {
+                    ConnectedMixerContent(viewModel: viewModel)
                 } else {
                     disconnectedContent
                 }
             }
             .navigationTitle("Qu Controller")
             .toolbar {
+                if chromeModel.connectionState.phase == .connected {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        connectedStatusButton
+                    }
+                }
+
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        isShowingSettings = true
-                    } label: {
-                        Image(systemName: "gearshape")
+                    if chromeModel.connectionState.phase == .connected {
+                        connectedOverflowMenu
+                    } else {
+                        Button {
+                            isShowingSettings = true
+                        } label: {
+                            Image(systemName: "gearshape")
+                        }
                     }
                 }
             }
@@ -54,6 +78,48 @@ struct ContentView: View {
         } message: {
             Text("This powers off the connected Qu mixer and may require a hard power reset to turn it back on.")
         }
+        .alert("Connection Status", isPresented: $isShowingStatusDetails) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(chromeModel.statusDetailsMessage)
+        }
+    }
+
+    private var connectedStatusButton: some View {
+        Button {
+            isShowingStatusDetails = true
+        } label: {
+            Image(systemName: statusIconName(for: chromeModel.connectionState.phase))
+                .foregroundStyle(statusColor(for: chromeModel.connectionState.phase))
+        }
+    }
+
+    private var connectedOverflowMenu: some View {
+        Menu {
+            Button {
+                isShowingSettings = true
+            } label: {
+                Label("Settings", systemImage: "gearshape")
+            }
+
+            Button {
+                viewModel.toggleConnection()
+            } label: {
+                Label("Disconnect", systemImage: "bolt.slash")
+            }
+
+            Button(role: .destructive) {
+                if viewModel.confirmBeforeShutdown {
+                    isShowingShutdownConfirmation = true
+                } else {
+                    viewModel.shutdownMixer()
+                }
+            } label: {
+                Label("Shut Down Mixer", systemImage: "power")
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
     }
 
     private var disconnectedContent: some View {
@@ -72,14 +138,14 @@ struct ContentView: View {
                     Text("Mixer IP")
                         .font(.headline)
 
-                    TextField("192.168.4.198", text: $viewModel.host)
+                    TextField("192.168.4.198", text: hostBinding)
                         .textInputAutocapitalization(.never)
                         .textContentType(.URL)
                         .autocorrectionDisabled()
                         .textFieldStyle(.roundedBorder)
                         .submitLabel(.go)
                         .onSubmit {
-                            if viewModel.connectionState.phase == .disconnected || viewModel.connectionState.phase == .error {
+                            if chromeModel.connectionState.phase == .disconnected || chromeModel.connectionState.phase == .error {
                                 viewModel.toggleConnection()
                             }
                         }
@@ -91,20 +157,20 @@ struct ContentView: View {
 
                 ConnectionStatusCard(
                     title: "Status",
-                    message: viewModel.statusMessage,
-                    phase: viewModel.connectionState.phase,
-                    isScanning: viewModel.isScanningForMixer
+                    message: chromeModel.statusMessage,
+                    phase: chromeModel.connectionState.phase,
+                    isScanning: chromeModel.isScanningForMixer
                 )
 
                 VStack(spacing: 12) {
-                    Button(viewModel.buttonTitle) {
+                    Button(chromeModel.buttonTitle) {
                         viewModel.toggleConnection()
                     }
                     .buttonStyle(.borderedProminent)
                     .frame(maxWidth: .infinity)
 
                     Button(viewModel.scanButtonTitle) {
-                        if viewModel.isScanningForMixer {
+                        if chromeModel.isScanningForMixer {
                             viewModel.stopScanningForMixer()
                         } else {
                             viewModel.scanForMixer()
@@ -112,7 +178,7 @@ struct ContentView: View {
                     }
                     .buttonStyle(.bordered)
                     .frame(maxWidth: .infinity)
-                    .disabled(!viewModel.isScanningForMixer && !viewModel.isAutoScanAvailable)
+                    .disabled(!chromeModel.isScanningForMixer && !chromeModel.isAutoScanAvailable)
                 }
             }
             .frame(maxWidth: 560)
@@ -122,81 +188,173 @@ struct ContentView: View {
         .background(Color(.systemGroupedBackground))
     }
 
-    private var connectedContent: some View {
-        List {
-            Section {
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(viewModel.statusMessage)
-                            .font(.subheadline.weight(.medium))
-                        Text("\(viewModel.visibleMainScreenChannels.count) visible channels")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Spacer()
-
-                    StatusBadge(phase: viewModel.connectionState.phase)
-                }
-                .padding(.vertical, 4)
+    private var hostBinding: Binding<String> {
+        Binding(
+            get: { chromeModel.host },
+            set: { newValue in
+                chromeModel.host = newValue
+                viewModel.updateHost(newValue)
             }
+        )
+    }
+}
 
-            Section("Channels") {
-                ForEach(viewModel.visibleMainScreenChannels) { channel in
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(channel.displayName)
-                                    .font(.headline)
-                                Text(channel.id.defaultDisplayName)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+@MainActor
+private final class ContentChromeModel: ObservableObject {
+    @Published var host: String
+    @Published private(set) var connectionState: MixerConnectionState
+    @Published private(set) var discoveryState: MixerScreenViewModel.DiscoveryState
+    @Published private(set) var confirmBeforeShutdown: Bool
+    @Published private(set) var visibleMainScreenChannelCount: Int
+
+    private let supportsAutoDiscovery: Bool
+    private var cancellables = Set<AnyCancellable>()
+
+    init(viewModel: MixerScreenViewModel) {
+        host = viewModel.host
+        connectionState = viewModel.connectionState
+        discoveryState = viewModel.discoveryState
+        confirmBeforeShutdown = viewModel.confirmBeforeShutdown
+        visibleMainScreenChannelCount = viewModel.visibleMainScreenChannels.count
+        supportsAutoDiscovery = viewModel.supportsAutoDiscovery
+
+        viewModel.hostPublisher
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$host)
+
+        viewModel.connectionStatePublisher
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$connectionState)
+
+        viewModel.discoveryStatePublisher
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$discoveryState)
+
+        viewModel.confirmBeforeShutdownPublisher
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$confirmBeforeShutdown)
+
+        viewModel.layoutPreferencesPublisher
+            .receive(on: DispatchQueue.main)
+            .map { preferences in
+                preferences.channelIDs(for: .mainScreen).count
+            }
+            .assign(to: &$visibleMainScreenChannelCount)
+    }
+
+    var buttonTitle: String {
+        switch connectionState.phase {
+        case .connected, .connecting:
+            "Disconnect"
+        case .disconnected, .error:
+            "Connect"
+        }
+    }
+
+    var statusMessage: String {
+        switch discoveryState {
+        case .scanning where connectionState.phase == .disconnected:
+            "Scanning local network for a Qu mixer..."
+        case .found(let discoveredHost) where connectionState.phase == .disconnected:
+            "Discovered mixer at \(discoveredHost)"
+        case .unavailable where connectionState.phase == .disconnected:
+            "No mixer discovered automatically. Enter an IP and connect manually."
+        default:
+            connectionState.message
+        }
+    }
+
+    var statusDetailsMessage: String {
+        if connectionState.phase == .connected {
+            return "Mixer Connected\n\(visibleMainScreenChannelCount) visible channels\n\n\(connectionState.message)"
+        }
+
+        return statusMessage
+    }
+
+    var isScanningForMixer: Bool {
+        discoveryState == .scanning && connectionState.phase == .disconnected
+    }
+
+    var isAutoScanAvailable: Bool {
+        supportsAutoDiscovery && connectionState.phase == .disconnected && !isScanningForMixer
+    }
+}
+
+private struct ConnectedMixerContent: View {
+    @ObservedObject var viewModel: MixerScreenViewModel
+
+    var body: some View {
+        GeometryReader { geometry in
+            let usesWideMixerLayout = geometry.size.width > geometry.size.height || geometry.size.width >= 700
+            let wideLayoutHeight = max(0, geometry.size.height - 40)
+            let visibleChannels = viewModel.visibleMainScreenChannels
+            let mainLRChannel = visibleChannels.first(where: { $0.id == .mainLr })
+            let scrollableChannels = visibleChannels.filter { $0.id != .mainLr }
+
+            Group {
+                if usesWideMixerLayout {
+                    VStack(alignment: .leading, spacing: 20) {
+                        AdaptiveMixerSurface(
+                            channels: visibleChannels,
+                            showsSignalIndicators: viewModel.showSignalIndicators,
+                            isInteractive: viewModel.isFaderInteractive,
+                            usesWideLayout: true,
+                            wideLayoutHeight: wideLayoutHeight,
+                            onLevelChange: { level, channelID in
+                                viewModel.setLevel(level, for: channelID)
+                            },
+                            onMuteToggle: { isMuted, channelID in
+                                viewModel.setMute(isMuted, for: channelID)
                             }
-
-                            Spacer()
-
-                            if viewModel.showSignalIndicators {
-                                Circle()
-                                    .fill(channel.hasSignal ? Color.green : Color.gray.opacity(0.4))
-                                    .frame(width: 10, height: 10)
-                            }
-                        }
-
-                        HStack {
-                            Text("Level \(channel.level.percentage)%")
-                                .font(.subheadline.monospacedDigit())
-
-                            Spacer()
-
-                            Toggle(
-                                "Mute",
-                                isOn: Binding(
-                                    get: { channel.isMuted },
-                                    set: { viewModel.setMute($0, for: channel.id) }
-                                )
+                        )
+                    }
+                    .padding(20)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 20) {
+                            AdaptiveMixerSurface(
+                                channels: scrollableChannels,
+                                showsSignalIndicators: viewModel.showSignalIndicators,
+                                isInteractive: viewModel.isFaderInteractive,
+                                usesWideLayout: false,
+                                wideLayoutHeight: nil,
+                                onLevelChange: { level, channelID in
+                                    viewModel.setLevel(level, for: channelID)
+                                },
+                                onMuteToggle: { isMuted, channelID in
+                                    viewModel.setMute(isMuted, for: channelID)
+                                }
                             )
-                            .labelsHidden()
                         }
+                        .padding(20)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
                     }
-                    .padding(.vertical, 4)
                 }
             }
-
-            Section {
-                Button("Disconnect") {
-                    viewModel.toggleConnection()
-                }
-
-                Button("Shut Down Mixer", role: .destructive) {
-                    if viewModel.confirmBeforeShutdown {
-                        isShowingShutdownConfirmation = true
-                    } else {
-                        viewModel.shutdownMixer()
-                    }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(Color(.systemGroupedBackground))
+            .safeAreaInset(edge: .bottom) {
+                if !usesWideMixerLayout, let mainLRChannel {
+                    HorizontalMixerChannelRow(
+                        channel: mainLRChannel,
+                        showsSignalIndicator: viewModel.showSignalIndicators,
+                        isInteractive: viewModel.isFaderInteractive,
+                        onLevelChange: { level in
+                            viewModel.setLevel(level, for: mainLRChannel.id)
+                        },
+                        onMuteToggle: { isMuted in
+                            viewModel.setMute(isMuted, for: mainLRChannel.id)
+                        }
+                    )
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+                    .padding(.bottom, 12)
+                    .background(.bar)
                 }
             }
         }
-        .listStyle(.insetGrouped)
     }
 }
 
@@ -233,25 +391,42 @@ private struct ConnectionStatusCard: View {
     }
 }
 
+private func statusLabel(for phase: MixerConnectionPhase) -> String {
+    switch phase {
+    case .connected: "Connected"
+    case .connecting: "Connecting"
+    case .disconnected: "Disconnected"
+    case .error: "Error"
+    }
+}
+
+private func statusIconName(for phase: MixerConnectionPhase) -> String {
+    switch phase {
+    case .connected: "checkmark.circle.fill"
+    case .connecting: "arrow.triangle.2.circlepath.circle.fill"
+    case .disconnected: "circle.dashed"
+    case .error: "exclamationmark.circle.fill"
+    }
+}
+
+private func statusColor(for phase: MixerConnectionPhase) -> Color {
+    switch phase {
+    case .connected: .green
+    case .connecting: .orange
+    case .disconnected: .secondary
+    case .error: .red
+    }
+}
+
 private struct StatusBadge: View {
     let phase: MixerConnectionPhase
 
     private var label: String {
-        switch phase {
-        case .connected: "Connected"
-        case .connecting: "Connecting"
-        case .disconnected: "Disconnected"
-        case .error: "Error"
-        }
+        statusLabel(for: phase)
     }
 
     private var color: Color {
-        switch phase {
-        case .connected: .green
-        case .connecting: .orange
-        case .disconnected: .secondary
-        case .error: .red
-        }
+        statusColor(for: phase)
     }
 
     var body: some View {

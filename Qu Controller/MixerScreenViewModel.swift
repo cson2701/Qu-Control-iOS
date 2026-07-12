@@ -78,6 +78,34 @@ final class MixerScreenViewModel: ObservableObject {
         visibleChannels(for: .mainScreen)
     }
 
+    var hostPublisher: AnyPublisher<String, Never> {
+        $host.eraseToAnyPublisher()
+    }
+
+    var discoveryStatePublisher: AnyPublisher<DiscoveryState, Never> {
+        $discoveryState.eraseToAnyPublisher()
+    }
+
+    var connectionStatePublisher: AnyPublisher<MixerConnectionState, Never> {
+        $connectionState.eraseToAnyPublisher()
+    }
+
+    var layoutPreferencesPublisher: AnyPublisher<MixerLayoutPreferences, Never> {
+        $layoutPreferences.eraseToAnyPublisher()
+    }
+
+    var confirmBeforeShutdownPublisher: AnyPublisher<Bool, Never> {
+        $confirmBeforeShutdown.eraseToAnyPublisher()
+    }
+
+    var showSignalIndicatorsPublisher: AnyPublisher<Bool, Never> {
+        $showSignalIndicators.eraseToAnyPublisher()
+    }
+
+    var supportsAutoDiscovery: Bool {
+        controller is QuNetworkMixerController
+    }
+
     var selectableChannels: [MixerChannelState] {
         displayChannels
     }
@@ -149,6 +177,10 @@ final class MixerScreenViewModel: ObservableObject {
                 await controller.connect(to: MixerEndpoint(host: host))
             }
         }
+    }
+
+    func updateHost(_ host: String) {
+        self.host = host
     }
 
     func setLevel(_ level: FaderLevel, for channelID: MixerChannelID) {
