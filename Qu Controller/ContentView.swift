@@ -78,10 +78,14 @@ struct ContentView: View {
         } message: {
             Text("This powers off the connected Qu mixer and may require a hard power reset to turn it back on.")
         }
-        .alert("Connection Status", isPresented: $isShowingStatusDetails) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(chromeModel.statusDetailsMessage)
+        .sheet(isPresented: $isShowingStatusDetails) {
+            StatusDetailsSheet(
+                title: chromeModel.statusSheetTitle,
+                message: chromeModel.statusDetailsMessage,
+                phase: chromeModel.connectionState.phase
+            )
+            .presentationDetents([.height(chromeModel.statusSheetHeight)])
+            .presentationDragIndicator(.visible)
         }
     }
 
@@ -266,10 +270,29 @@ private final class ContentChromeModel: ObservableObject {
 
     var statusDetailsMessage: String {
         if connectionState.phase == .connected {
-            return "Mixer Connected\n\(visibleMainScreenChannelCount) visible channels\n\n\(connectionState.message)"
+            return "\(visibleMainScreenChannelCount) visible channels\n\n\(connectionState.message)"
         }
 
         return statusMessage
+    }
+
+    var statusSheetTitle: String {
+        if connectionState.phase == .connected {
+            return "Mixer Connected"
+        }
+
+        return "Connection Status"
+    }
+
+    var statusSheetHeight: CGFloat {
+        switch connectionState.phase {
+        case .connected:
+            return 210
+        case .connecting:
+            return 180
+        case .disconnected, .error:
+            return 170
+        }
     }
 
     var isScanningForMixer: Bool {
@@ -388,6 +411,37 @@ private struct ConnectionStatusCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+}
+
+private struct StatusDetailsSheet: View {
+    let title: String
+    let message: String
+    let phase: MixerConnectionPhase
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: statusIconName(for: phase))
+                    .foregroundStyle(statusColor(for: phase))
+                    .font(.title3)
+
+                Text(title)
+                    .font(.headline)
+
+                Spacer()
+
+                StatusBadge(phase: phase)
+            }
+
+            Text(message)
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .presentationCompactAdaptation(.none)
     }
 }
 
