@@ -68,6 +68,12 @@ struct AdaptiveMixerSurface: View {
             }
 
             if let mainLRChannel {
+                Rectangle()
+                    .fill(Color.secondary.opacity(0.18))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 1)
+                    .padding(.vertical, 2)
+
                 HorizontalMixerChannelRow(
                     channel: mainLRChannel,
                     showsSignalIndicator: showsSignalIndicators,
@@ -107,6 +113,12 @@ struct AdaptiveMixerSurface: View {
             .scrollIndicators(.visible)
 
             if let mainLRChannel {
+                Rectangle()
+                    .fill(Color.secondary.opacity(0.18))
+                    .frame(width: 1)
+                    .padding(.vertical, 16)
+                    .padding(.trailing, 2)
+
                 VerticalMixerChannelCard(
                     channel: mainLRChannel,
                     availableHeight: wideCardHeight,
