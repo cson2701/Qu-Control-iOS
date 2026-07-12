@@ -351,7 +351,7 @@ private struct LocalSubnet {
                 break
             }
 
-            let priority = interfacePriority(name: name)
+            let priority = interfacePriority(name: name, address: address)
             candidates.append((priority, LocalSubnet(address: address, netmask: netmask)))
 
             if let next = interface.ifa_next {
@@ -432,17 +432,62 @@ private struct LocalSubnet {
         discoveryNetmask.nonzeroBitCount
     }
 
-    private static func interfacePriority(name: String) -> Int {
+    private static func interfacePriority(name: String, address: UInt32) -> Int {
+        if isPrivateRFC1918(address) {
+            if name.hasPrefix("en") {
+                return 0
+            }
+            if name.hasPrefix("bridge") {
+                return 1
+            }
+            if name.hasPrefix("pdp_ip") {
+                return 2
+            }
+            return 3
+        }
+
+        if isLinkLocal(address) {
+            if name.hasPrefix("en") {
+                return 10
+            }
+            if name.hasPrefix("bridge") {
+                return 11
+            }
+            if name.hasPrefix("pdp_ip") {
+                return 12
+            }
+            return 13
+        }
+
         if name.hasPrefix("en") {
-            return 0
+            return 4
         }
         if name.hasPrefix("bridge") {
-            return 1
+            return 5
         }
         if name.hasPrefix("pdp_ip") {
-            return 2
+            return 6
         }
-        return 3
+        return 7
+    }
+
+    private static func isPrivateRFC1918(_ address: UInt32) -> Bool {
+        let octet1 = (address >> 24) & 0xFF
+        let octet2 = (address >> 16) & 0xFF
+
+        if octet1 == 10 {
+            return true
+        }
+
+        if octet1 == 172, (16 ... 31).contains(Int(octet2)) {
+            return true
+        }
+
+        return octet1 == 192 && octet2 == 168
+    }
+
+    private static func isLinkLocal(_ address: UInt32) -> Bool {
+        ((address >> 24) & 0xFF) == 169 && ((address >> 16) & 0xFF) == 254
     }
 
     static func ipv4Address(octet1: UInt32, octet2: UInt32, octet3: UInt32, octet4: UInt32) -> UInt32 {
