@@ -1,0 +1,47 @@
+name: Close issue from PR title
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  close-issue:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: read
+
+    steps:
+      - name: Extract issue number and close issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = context.payload.pull_request.title;
+            console.log(`Analyzing PR title: "${title}"`);
+
+            // Match [24] at start or anywhere in title
+            const match = title.match(/\[(\d+)\]/);
+
+            if (!match) {
+              console.log("No issue number found in PR title (format expected: [123])");
+              return;
+            }
+
+            const issueNumber = parseInt(match[1], 10);
+            const { owner, repo } = context.repo;
+
+            console.log(`Attempting to close issue #${issueNumber} in ${owner}/${repo}`);
+
+            try {
+              await github.rest.issues.update({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                state: "closed",
+                state_reason: "completed"
+              });
+              console.log(`Successfully closed issue #${issueNumber}`);
+            } catch (error) {
+              core.setFailed(`Failed to close issue #${issueNumber}: ${error.message}`);
+            }

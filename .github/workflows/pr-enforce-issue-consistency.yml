@@ -1,0 +1,129 @@
+name: Enforce Issue Consistency (Branch, PR, Commits)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  pull-requests: write
+  issues: read
+  contents: read
+
+jobs:
+  enforce:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ---------------------------
+      # 1. Extract issue from branch
+      # ---------------------------
+      - name: Extract issue number from branch
+        id: extract
+        run: |
+          BRANCH="${{ github.head_ref }}"
+          echo "Branch: $BRANCH"
+
+          if [[ "$BRANCH" =~ ^([0-9]+)- ]]; then
+            ISSUE_NUMBER="${BASH_REMATCH[1]}"
+            echo "issue=$ISSUE_NUMBER" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Branch must start with issue number like: 24-xxx"
+            exit 1
+          fi
+
+      # ---------------------------
+      # 2. Fetch issue title
+      # ---------------------------
+      - name: Fetch issue title
+        id: issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNumber = parseInt("${{ steps.extract.outputs.issue }}", 10);
+
+            const issue = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber
+            });
+
+            core.setOutput('title', issue.data.title);
+
+      # ---------------------------
+      # 3. Set PR title
+      # ---------------------------
+      - name: Update PR title
+        uses: actions/github-script@v7
+        env:
+          ISSUE_TITLE: ${{ steps.issue.outputs.title }}
+        with:
+          script: |
+            const issueNumber = "${{ steps.extract.outputs.issue }}";
+            const issueTitle = process.env.ISSUE_TITLE;
+            const newTitle = `[${issueNumber}] ${issueTitle}`;
+
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              title: newTitle
+            });
+
+      # ---------------------------
+      # 4. Comment issue link
+      # ---------------------------
+      - name: Comment issue link
+        if: github.event.action == 'opened'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNumber = "${{ steps.extract.outputs.issue }}";
+            const body = `🔗 **Linked Issue**: #${issueNumber}`;
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+
+      # ---------------------------
+      # 5. Checkout commits for inspection
+      # ---------------------------
+      - name: Checkout PR commits
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ---------------------------
+      # 6. Validate commit messages
+      # ---------------------------
+      - name: Validate commit messages
+        run: |
+          ISSUE="${{ steps.extract.outputs.issue }}"
+
+          echo "Checking commits for issue: [$ISSUE]"
+
+          # Get commits in PR (excluding merge commits)
+          COMMITS=$(git log --no-merges origin/${{ github.base_ref }}..HEAD --pretty=format:%s)
+
+          echo "$COMMITS"
+
+          FAIL=0
+
+          while IFS= read -r commit; do
+            echo "Checking commit: $commit"
+
+            # Must start with [24]
+            if [[ ! "$commit" =~ ^\[$ISSUE\]\ .+ ]]; then
+              echo "❌ Invalid commit message: $commit"
+              FAIL=1
+            fi
+          done <<< "$COMMITS"
+
+          if [ "$FAIL" -eq 1 ]; then
+            echo ""
+            echo "❌ One or more commits do not follow format:"
+            echo "   [$ISSUE] xxx"
+            exit 1
+          fi

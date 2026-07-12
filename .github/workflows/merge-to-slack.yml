@@ -1,0 +1,34 @@
+name: Slack Merged Pull Request Open Notification
+
+on:
+  push:
+    branches:
+      - main
+
+
+jobs:
+  build:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Set up environment variables
+        run: |
+          echo "GITHUB_TO_SLACK_MAPPING=cson2701:U03L252MT0T,gavin-song-gtg:U0B9C4PHM7B" >> $GITHUB_ENV
+
+      - name: Extract GitHub username
+        id: extract_username
+        run: echo "username=${{ github.actor }}" >> $GITHUB_OUTPUT
+
+      - name: Find Slack user ID
+        id: find_slack_user
+        run: echo "slack_id=$(echo $GITHUB_TO_SLACK_MAPPING | grep -oP "${{ github.actor }}:\K[^,]+")" >> $GITHUB_OUTPUT
+
+      - name: Post to a Slack channel
+        id: slack
+        uses: slackapi/slack-github-action@v1.25.0
+        with:
+          channel-id: 'C0BA9AQUQKG'
+          slack-message: "Code has been merged by <@${{ steps.find_slack_user.outputs.slack_id }}>:\n${{ github.event.head_commit.url }}"
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
