@@ -7,6 +7,7 @@
 
 import Combine
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
     let viewModel: MixerScreenViewModel
@@ -142,28 +143,40 @@ struct ContentView: View {
                     Text("Mixer IP")
                         .font(.headline)
 
-                    TextField(chromeModel.hostPlaceholder, text: hostBinding)
-                        .keyboardType(.decimalPad)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .textFieldStyle(.roundedBorder)
-                        .submitLabel(.go)
-                        .onSubmit {
-                            if (chromeModel.connectionState.phase == .disconnected || chromeModel.connectionState.phase == .error)
-                                && chromeModel.canConnect {
-                                viewModel.toggleConnection()
-                            }
+                    IPv4AddressTextField(
+                        placeholder: chromeModel.hostPlaceholder,
+                        text: hostBinding
+                    ) {
+                        if (chromeModel.connectionState.phase == .disconnected || chromeModel.connectionState.phase == .error)
+                            && chromeModel.canConnect {
+                            viewModel.toggleConnection()
                         }
-
-                    if let hostValidationMessage = chromeModel.hostValidationMessage {
-                        Text(hostValidationMessage)
-                            .font(.caption)
-                            .foregroundStyle(.red)
                     }
+                    .frame(height: 36)
 
                     Text("Port 51325")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                
+                    HStack(spacing: 12) {
+                        Button(chromeModel.buttonTitle) {
+                            viewModel.toggleConnection()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .frame(maxWidth: .infinity)
+                        .disabled(chromeModel.isPrimaryActionDisabled)
+
+                        Button(viewModel.scanButtonTitle) {
+                            if chromeModel.isScanningForMixer {
+                                viewModel.stopScanningForMixer()
+                            } else {
+                                viewModel.scanForMixer()
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .frame(maxWidth: .infinity)
+                        .disabled(!chromeModel.isScanningForMixer && !chromeModel.isAutoScanAvailable)
+                    }
                 }
 
                 ConnectionStatusCard(
@@ -172,26 +185,6 @@ struct ContentView: View {
                     phase: chromeModel.connectionState.phase,
                     isScanning: chromeModel.isScanningForMixer
                 )
-
-                VStack(spacing: 12) {
-                    Button(chromeModel.buttonTitle) {
-                        viewModel.toggleConnection()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .frame(maxWidth: .infinity)
-                    .disabled(chromeModel.isPrimaryActionDisabled)
-
-                    Button(viewModel.scanButtonTitle) {
-                        if chromeModel.isScanningForMixer {
-                            viewModel.stopScanningForMixer()
-                        } else {
-                            viewModel.scanForMixer()
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .frame(maxWidth: .infinity)
-                    .disabled(!chromeModel.isScanningForMixer && !chromeModel.isAutoScanAvailable)
-                }
             }
             .frame(maxWidth: 560)
             .padding(24)
@@ -204,11 +197,69 @@ struct ContentView: View {
         Binding(
             get: { chromeModel.host },
             set: { newValue in
-                let sanitizedValue = ContentChromeModel.sanitizeIPv4Input(newValue)
-                chromeModel.host = sanitizedValue
-                viewModel.updateHost(sanitizedValue)
+                chromeModel.host = newValue
+                viewModel.updateHost(newValue)
             }
         )
+    }
+}
+
+private struct IPv4AddressTextField: UIViewRepresentable {
+    let placeholder: String
+    @Binding var text: String
+    let onSubmit: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text, onSubmit: onSubmit)
+    }
+
+    func makeUIView(context: Context) -> UITextField {
+        let textField = UITextField(frame: .zero)
+        textField.borderStyle = .roundedRect
+        textField.keyboardType = .decimalPad
+        textField.returnKeyType = .go
+        textField.autocapitalizationType = .none
+        textField.autocorrectionType = .no
+        textField.clearButtonMode = .whileEditing
+        textField.delegate = context.coordinator
+        textField.addTarget(context.coordinator, action: #selector(Coordinator.textDidChange(_:)), for: .editingChanged)
+        return textField
+    }
+
+    func updateUIView(_ textField: UITextField, context: Context) {
+        textField.placeholder = placeholder
+        if textField.text != text {
+            textField.text = text
+        }
+    }
+
+    final class Coordinator: NSObject, UITextFieldDelegate {
+        @Binding private var text: String
+        private let onSubmit: () -> Void
+
+        init(text: Binding<String>, onSubmit: @escaping () -> Void) {
+            _text = text
+            self.onSubmit = onSubmit
+        }
+
+        func textField(_ textField: UITextField, shouldChangeCharactersIn range: NSRange, replacementString replacementString: String) -> Bool {
+            let currentText = textField.text ?? ""
+            guard let stringRange = Range(range, in: currentText) else {
+                return false
+            }
+
+            let proposedText = currentText.replacingCharacters(in: stringRange, with: replacementString)
+            return ContentChromeModel.isAllowedIPv4Input(proposedText)
+        }
+
+        func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+            onSubmit()
+            return true
+        }
+
+        @objc func textDidChange(_ textField: UITextField) {
+            text = textField.text ?? ""
+        }
     }
 }
 
@@ -285,14 +336,6 @@ private final class ContentChromeModel: ObservableObject {
         isHostValid
     }
 
-    var hostValidationMessage: String? {
-        guard !host.isEmpty, !isHostValid else {
-            return nil
-        }
-
-        return "Enter a valid IPv4 address like \(hostPlaceholder)."
-    }
-
     var statusMessage: String {
         switch discoveryState {
         case .scanning where connectionState.phase == .disconnected:
@@ -350,32 +393,35 @@ private final class ContentChromeModel: ObservableObject {
         }
     }
 
-    static func sanitizeIPv4Input(_ value: String) -> String {
-        var sanitized = ""
-        var octetLength = 0
-        var dotCount = 0
-
-        for character in value {
-            if character.isWholeNumber {
-                guard dotCount < 4, octetLength < 3 else {
-                    continue
-                }
-
-                sanitized.append(character)
-                octetLength += 1
-                continue
-            }
-
-            guard character == ".", !sanitized.isEmpty, sanitized.last != ".", dotCount < 3 else {
-                continue
-            }
-
-            sanitized.append(character)
-            dotCount += 1
-            octetLength = 0
+    static func isAllowedIPv4Input(_ value: String) -> Bool {
+        if value.isEmpty {
+            return true
         }
 
-        return sanitized
+        guard value.allSatisfy({ $0.isWholeNumber || $0 == "." }),
+              !value.hasPrefix("."),
+              !value.contains("..") else {
+            return false
+        }
+
+        let octets = value.split(separator: ".", omittingEmptySubsequences: false)
+        guard octets.count <= 4 else {
+            return false
+        }
+
+        for octet in octets {
+            guard octet.count <= 3 else {
+                return false
+            }
+
+            if !octet.isEmpty {
+                guard let octetValue = Int(octet), octetValue <= 255 else {
+                    return false
+                }
+            }
+        }
+
+        return true
     }
 
     static func isValidIPv4Address(_ value: String) -> Bool {
