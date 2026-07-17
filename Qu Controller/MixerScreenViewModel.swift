@@ -164,7 +164,9 @@ final class MixerScreenViewModel: ObservableObject {
     }
 
     var isAutoScanAvailable: Bool {
-        controller is QuNetworkMixerController && connectionState.phase == .disconnected && !isScanningForMixer
+        controller is QuNetworkMixerController
+            && isRetryableDiscoveryState
+            && !isScanningForMixer
     }
 
     var scanButtonTitle: String {
@@ -325,6 +327,15 @@ final class MixerScreenViewModel: ObservableObject {
 
     private func updateSignalMonitoringState(for state: MixerConnectionState) {
         controller.setSignalMonitoringEnabled(showSignalIndicators && state.phase == .connected)
+    }
+
+    private var isRetryableDiscoveryState: Bool {
+        switch connectionState.phase {
+        case .disconnected, .error:
+            true
+        case .connected, .connecting:
+            false
+        }
     }
 
     private func startInitialConnectionFlowIfNeeded() {
