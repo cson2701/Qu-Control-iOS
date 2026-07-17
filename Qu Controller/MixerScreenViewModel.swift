@@ -106,6 +106,14 @@ final class MixerScreenViewModel: ObservableObject {
         controller is QuNetworkMixerController
     }
 
+    var rememberedHost: String? {
+        Self.loadLastSuccessfulHost(from: userDefaults)
+    }
+
+    var hostPlaceholder: String {
+        rememberedHost ?? defaultHost
+    }
+
     var selectableChannels: [MixerChannelState] {
         let orderedIDs = layoutPreferences.orderedChannelIDs(for: .mainScreen)
         let channelsByID = Dictionary(uniqueKeysWithValues: displayChannels.map { ($0.id, $0) })
@@ -178,8 +186,11 @@ final class MixerScreenViewModel: ObservableObject {
         case .connected, .connecting:
             controller.disconnect()
         case .disconnected, .error:
+            let connectionHost = host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? rememberedHost ?? host
+                : host
             Task {
-                await controller.connect(to: MixerEndpoint(host: host))
+                await controller.connect(to: MixerEndpoint(host: connectionHost))
             }
         }
     }

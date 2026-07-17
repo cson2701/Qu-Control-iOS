@@ -142,17 +142,24 @@ struct ContentView: View {
                     Text("Mixer IP")
                         .font(.headline)
 
-                    TextField("192.168.4.198", text: hostBinding)
+                    TextField(chromeModel.hostPlaceholder, text: hostBinding)
+                        .keyboardType(.decimalPad)
                         .textInputAutocapitalization(.never)
-                        .textContentType(.URL)
                         .autocorrectionDisabled()
                         .textFieldStyle(.roundedBorder)
                         .submitLabel(.go)
                         .onSubmit {
-                            if chromeModel.connectionState.phase == .disconnected || chromeModel.connectionState.phase == .error {
+                            if (chromeModel.connectionState.phase == .disconnected || chromeModel.connectionState.phase == .error)
+                                && chromeModel.canConnect {
                                 viewModel.toggleConnection()
                             }
                         }
+
+                    if let hostValidationMessage = chromeModel.hostValidationMessage {
+                        Text(hostValidationMessage)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
 
                     Text("Port 51325")
                         .font(.caption)
@@ -172,6 +179,7 @@ struct ContentView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .frame(maxWidth: .infinity)
+                    .disabled(chromeModel.isPrimaryActionDisabled)
 
                     Button(viewModel.scanButtonTitle) {
                         if chromeModel.isScanningForMixer {
@@ -196,8 +204,9 @@ struct ContentView: View {
         Binding(
             get: { chromeModel.host },
             set: { newValue in
-                chromeModel.host = newValue
-                viewModel.updateHost(newValue)
+                let sanitizedValue = ContentChromeModel.sanitizeIPv4Input(newValue)
+                chromeModel.host = sanitizedValue
+                viewModel.updateHost(sanitizedValue)
             }
         )
     }
@@ -210,6 +219,8 @@ private final class ContentChromeModel: ObservableObject {
     @Published private(set) var discoveryState: MixerScreenViewModel.DiscoveryState
     @Published private(set) var confirmBeforeShutdown: Bool
     @Published private(set) var visibleMainScreenChannelCount: Int
+    @Published private(set) var rememberedHost: String?
+    @Published private(set) var hostPlaceholder: String
 
     private let supportsAutoDiscovery: Bool
     private var cancellables = Set<AnyCancellable>()
@@ -220,6 +231,8 @@ private final class ContentChromeModel: ObservableObject {
         discoveryState = viewModel.discoveryState
         confirmBeforeShutdown = viewModel.confirmBeforeShutdown
         visibleMainScreenChannelCount = viewModel.visibleMainScreenChannels.count
+        rememberedHost = viewModel.rememberedHost
+        hostPlaceholder = viewModel.hostPlaceholder
         supportsAutoDiscovery = viewModel.supportsAutoDiscovery
 
         viewModel.hostPublisher
@@ -253,6 +266,31 @@ private final class ContentChromeModel: ObservableObject {
         case .disconnected, .error:
             "Connect"
         }
+    }
+
+    var effectiveHost: String {
+        let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedHost.isEmpty {
+            return trimmedHost
+        }
+
+        return rememberedHost ?? ""
+    }
+
+    var isHostValid: Bool {
+        Self.isValidIPv4Address(effectiveHost)
+    }
+
+    var canConnect: Bool {
+        isHostValid
+    }
+
+    var hostValidationMessage: String? {
+        guard !host.isEmpty, !isHostValid else {
+            return nil
+        }
+
+        return "Enter a valid IPv4 address like \(hostPlaceholder)."
     }
 
     var statusMessage: String {
@@ -301,6 +339,61 @@ private final class ContentChromeModel: ObservableObject {
 
     var isAutoScanAvailable: Bool {
         supportsAutoDiscovery && isRetryableDiscoveryState && !isScanningForMixer
+    }
+
+    var isPrimaryActionDisabled: Bool {
+        switch connectionState.phase {
+        case .connected, .connecting:
+            false
+        case .disconnected, .error:
+            !canConnect
+        }
+    }
+
+    static func sanitizeIPv4Input(_ value: String) -> String {
+        var sanitized = ""
+        var octetLength = 0
+        var dotCount = 0
+
+        for character in value {
+            if character.isWholeNumber {
+                guard dotCount < 4, octetLength < 3 else {
+                    continue
+                }
+
+                sanitized.append(character)
+                octetLength += 1
+                continue
+            }
+
+            guard character == ".", !sanitized.isEmpty, sanitized.last != ".", dotCount < 3 else {
+                continue
+            }
+
+            sanitized.append(character)
+            dotCount += 1
+            octetLength = 0
+        }
+
+        return sanitized
+    }
+
+    static func isValidIPv4Address(_ value: String) -> Bool {
+        let octets = value.split(separator: ".", omittingEmptySubsequences: false)
+        guard octets.count == 4 else {
+            return false
+        }
+
+        for octet in octets {
+            guard !octet.isEmpty,
+                  octet.count <= 3,
+                  let octetValue = Int(octet),
+                  octetValue <= 255 else {
+                return false
+            }
+        }
+
+        return true
     }
 
     private var isRetryableDiscoveryState: Bool {
