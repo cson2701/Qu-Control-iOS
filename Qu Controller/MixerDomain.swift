@@ -153,14 +153,14 @@ struct MixerLayoutPreferences: Equatable, Codable {
     func orderedChannelIDs(for surface: MixerLayoutSurface) -> [MixerChannelID] {
         switch surface {
         case .mainScreen:
-            sanitized(mainScreenOrderedChannelIDs, fallback: Self.default.mainScreenOrderedChannelIDs)
+            sanitizedOrdered(mainScreenOrderedChannelIDs, fallback: Self.default.mainScreenOrderedChannelIDs)
         }
     }
 
     func visibleChannelIDs(for surface: MixerLayoutSurface) -> [MixerChannelID] {
         switch surface {
         case .mainScreen:
-            sanitized(mainScreenVisibleChannelIDs, fallback: Self.default.mainScreenVisibleChannelIDs)
+            sanitizedVisible(mainScreenVisibleChannelIDs, fallback: Self.default.mainScreenVisibleChannelIDs)
         }
     }
 
@@ -189,6 +189,7 @@ struct MixerLayoutPreferences: Equatable, Codable {
     ) {
         var updatedIDs = orderedChannelIDs(for: surface)
         Self.move(&updatedIDs, fromOffsets: source, toOffset: destination)
+        updatedIDs = Self.pinMainLR(updatedIDs)
 
         switch surface {
         case .mainScreen:
@@ -208,8 +209,13 @@ struct MixerLayoutPreferences: Equatable, Codable {
         return selectable(channelIDs: combined)
     }
 
-    private func sanitized(_ channelIDs: [MixerChannelID], fallback: [MixerChannelID]) -> [MixerChannelID] {
-        let sanitizedIDs = Self.sanitizedSelection(channelIDs, fallback: fallback)
+    private func sanitizedOrdered(_ channelIDs: [MixerChannelID], fallback: [MixerChannelID]) -> [MixerChannelID] {
+        let sanitizedIDs = Self.sanitizedOrderedSelection(channelIDs, fallback: fallback)
+        return sanitizedIDs.isEmpty ? fallback : sanitizedIDs
+    }
+
+    private func sanitizedVisible(_ channelIDs: [MixerChannelID], fallback: [MixerChannelID]) -> [MixerChannelID] {
+        let sanitizedIDs = Self.sanitizedVisibleSelection(channelIDs)
         return sanitizedIDs.isEmpty ? fallback : sanitizedIDs
     }
 
@@ -217,7 +223,7 @@ struct MixerLayoutPreferences: Equatable, Codable {
         MixerChannelID.selectableChannels.filter { channelIDs.contains($0) }
     }
 
-    private static func sanitizedSelection(_ channelIDs: [MixerChannelID], fallback: [MixerChannelID]) -> [MixerChannelID] {
+    private static func sanitizedOrderedSelection(_ channelIDs: [MixerChannelID], fallback: [MixerChannelID]) -> [MixerChannelID] {
         var seen = Set<MixerChannelID>()
         let preservedOrder = channelIDs.filter { channelID in
             MixerChannelID.selectableChannels.contains(channelID) && seen.insert(channelID).inserted
@@ -228,7 +234,14 @@ struct MixerLayoutPreferences: Equatable, Codable {
         }
 
         let missingChannelIDs = MixerChannelID.selectableChannels.filter { !seen.contains($0) }
-        return preservedOrder + missingChannelIDs
+        return pinMainLR(preservedOrder + missingChannelIDs)
+    }
+
+    private static func sanitizedVisibleSelection(_ channelIDs: [MixerChannelID]) -> [MixerChannelID] {
+        var seen = Set<MixerChannelID>()
+        return channelIDs.filter { channelID in
+            MixerChannelID.selectableChannels.contains(channelID) && seen.insert(channelID).inserted
+        }
     }
 
     private static func move(_ channelIDs: inout [MixerChannelID], fromOffsets source: IndexSet, toOffset destination: Int) {
@@ -240,6 +253,10 @@ struct MixerLayoutPreferences: Equatable, Codable {
 
         let insertionIndex = min(destination, channelIDs.count)
         channelIDs.insert(contentsOf: movingItems, at: insertionIndex)
+    }
+
+    private static func pinMainLR(_ channelIDs: [MixerChannelID]) -> [MixerChannelID] {
+        channelIDs.filter { $0 != .mainLr } + [.mainLr]
     }
 
     init(

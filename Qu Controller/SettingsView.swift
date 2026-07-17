@@ -10,7 +10,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Connection") {
+                Section {
                     Toggle(
                         "Automatically connect after discovery",
                         isOn: Binding(
@@ -18,9 +18,7 @@ struct SettingsView: View {
                             set: viewModel.setAutoConnectAfterDiscovery(_:)
                         )
                     )
-                }
 
-                Section("Safety") {
                     Toggle(
                         "Confirm before shutting down",
                         isOn: Binding(
@@ -28,9 +26,7 @@ struct SettingsView: View {
                             set: viewModel.setConfirmBeforeShutdown(_:)
                         )
                     )
-                }
 
-                Section("Display") {
                     Toggle(
                         "Show signal indicators",
                         isOn: Binding(
@@ -38,11 +34,11 @@ struct SettingsView: View {
                             set: viewModel.setShowSignalIndicators(_:)
                         )
                     )
-                }
 
-                Section("Visible Channels") {
-                    NavigationLink("Manage Channels") {
-                        ChannelManagementView(viewModel: viewModel, surface: .mainScreen)
+                    if viewModel.connectionState.phase == .connected {
+                        NavigationLink("Manage Channels") {
+                            ChannelManagementView(viewModel: viewModel, surface: .mainScreen)
+                        }
                     }
                 }
 
@@ -61,11 +57,12 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
                         dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
                     }
-                    .tint(.primary)
                 }
             }
         }
