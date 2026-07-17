@@ -300,7 +300,16 @@ private final class ContentChromeModel: ObservableObject {
     }
 
     var isAutoScanAvailable: Bool {
-        supportsAutoDiscovery && connectionState.phase == .disconnected && !isScanningForMixer
+        supportsAutoDiscovery && isRetryableDiscoveryState && !isScanningForMixer
+    }
+
+    private var isRetryableDiscoveryState: Bool {
+        switch connectionState.phase {
+        case .disconnected, .error:
+            true
+        case .connected, .connecting:
+            false
+        }
     }
 }
 
