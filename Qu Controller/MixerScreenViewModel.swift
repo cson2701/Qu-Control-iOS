@@ -22,6 +22,8 @@ final class MixerScreenViewModel: ObservableObject {
     @Published private(set) var discoveryState: DiscoveryState = .idle
     @Published private(set) var confirmBeforeShutdown: Bool
     @Published private(set) var autoConnectAfterDiscovery: Bool
+    @Published private(set) var autoScanOnLaunch: Bool
+    @Published private(set) var autoConnectLastKnownHostOnLaunch: Bool
     @Published private(set) var showSignalIndicators: Bool
 
     private let controller: MixerController
@@ -45,6 +47,8 @@ final class MixerScreenViewModel: ObservableObject {
         layoutPreferences = Self.loadLayoutPreferences(from: userDefaults)
         confirmBeforeShutdown = Self.loadConfirmBeforeShutdown(from: userDefaults)
         autoConnectAfterDiscovery = Self.loadAutoConnectAfterDiscovery(from: userDefaults)
+        autoScanOnLaunch = Self.loadAutoScanOnLaunch(from: userDefaults)
+        autoConnectLastKnownHostOnLaunch = Self.loadAutoConnectLastKnownHostOnLaunch(from: userDefaults)
         showSignalIndicators = Self.loadShowSignalIndicators(from: userDefaults)
 
         controller.channelsPublisher
@@ -254,6 +258,16 @@ final class MixerScreenViewModel: ObservableObject {
         userDefaults.set(isEnabled, forKey: AppSettingsKey.autoConnectAfterDiscovery)
     }
 
+    func setAutoScanOnLaunch(_ isEnabled: Bool) {
+        autoScanOnLaunch = isEnabled
+        userDefaults.set(isEnabled, forKey: AppSettingsKey.autoScanOnLaunch)
+    }
+
+    func setAutoConnectLastKnownHostOnLaunch(_ isEnabled: Bool) {
+        autoConnectLastKnownHostOnLaunch = isEnabled
+        userDefaults.set(isEnabled, forKey: AppSettingsKey.autoConnectLastKnownHostOnLaunch)
+    }
+
     func setShowSignalIndicators(_ isEnabled: Bool) {
         showSignalIndicators = isEnabled
         userDefaults.set(isEnabled, forKey: AppSettingsKey.showSignalIndicators)
@@ -328,6 +342,22 @@ final class MixerScreenViewModel: ObservableObject {
         return userDefaults.bool(forKey: AppSettingsKey.autoConnectAfterDiscovery)
     }
 
+    private static func loadAutoScanOnLaunch(from userDefaults: UserDefaults) -> Bool {
+        guard userDefaults.object(forKey: AppSettingsKey.autoScanOnLaunch) != nil else {
+            return true
+        }
+
+        return userDefaults.bool(forKey: AppSettingsKey.autoScanOnLaunch)
+    }
+
+    private static func loadAutoConnectLastKnownHostOnLaunch(from userDefaults: UserDefaults) -> Bool {
+        guard userDefaults.object(forKey: AppSettingsKey.autoConnectLastKnownHostOnLaunch) != nil else {
+            return false
+        }
+
+        return userDefaults.bool(forKey: AppSettingsKey.autoConnectLastKnownHostOnLaunch)
+    }
+
     private static func loadShowSignalIndicators(from userDefaults: UserDefaults) -> Bool {
         guard userDefaults.object(forKey: AppSettingsKey.showSignalIndicators) != nil else {
             return true
@@ -354,9 +384,15 @@ final class MixerScreenViewModel: ObservableObject {
             return
         }
 
-        guard autoConnectAfterDiscovery,
+        guard autoScanOnLaunch || autoConnectLastKnownHostOnLaunch else {
+            return
+        }
+
+        guard autoConnectLastKnownHostOnLaunch,
               let lastSuccessfulHost = Self.loadLastSuccessfulHost(from: userDefaults) else {
-            startDiscovery()
+            if autoScanOnLaunch {
+                startDiscovery()
+            }
             return
         }
 
@@ -373,12 +409,18 @@ final class MixerScreenViewModel: ObservableObject {
                 await self.controller.connect(to: MixerEndpoint(host: lastSuccessfulHost))
             } else {
                 self.launchAutoConnectHost = nil
-                self.startDiscovery()
+                if self.autoScanOnLaunch {
+                    self.startDiscovery()
+                }
             }
         }
     }
 
     private func startDiscoveryFallbackIfNeeded(for state: MixerConnectionState) {
+        guard autoScanOnLaunch else {
+            return
+        }
+
         guard let launchAutoConnectHost,
               state.phase == .error,
               state.endpoint?.host == launchAutoConnectHost else {

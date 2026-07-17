@@ -12,13 +12,29 @@ struct SettingsView: View {
             Form {
                 Section {
                     Toggle(
+                        "Automatically connect to last known IP address",
+                        isOn: Binding(
+                            get: { viewModel.autoConnectLastKnownHostOnLaunch },
+                            set: viewModel.setAutoConnectLastKnownHostOnLaunch(_:)
+                        )
+                    )
+
+                    Toggle(
+                        "Scan for mixer on launch",
+                        isOn: Binding(
+                            get: { viewModel.autoScanOnLaunch },
+                            set: viewModel.setAutoScanOnLaunch(_:)
+                        )
+                    )
+
+                    Toggle(
                         "Automatically connect after discovery",
                         isOn: Binding(
                             get: { viewModel.autoConnectAfterDiscovery },
                             set: viewModel.setAutoConnectAfterDiscovery(_:)
                         )
                     )
-
+                    
                     Toggle(
                         "Confirm before shutting down",
                         isOn: Binding(
@@ -26,7 +42,9 @@ struct SettingsView: View {
                             set: viewModel.setConfirmBeforeShutdown(_:)
                         )
                     )
+                }
 
+                Section {
                     Toggle(
                         "Show signal indicators",
                         isOn: Binding(
