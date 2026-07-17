@@ -109,7 +109,7 @@ struct ContentView: View {
             Button {
                 viewModel.toggleConnection()
             } label: {
-                Label("Disconnect", systemImage: "bolt.slash")
+                Label("Disconnect", systemImage: "cable.connector.slash")
             }
 
             Button(role: .destructive) {

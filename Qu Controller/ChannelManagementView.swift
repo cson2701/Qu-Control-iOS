@@ -15,6 +15,7 @@ struct ChannelManagementView: View {
                             set: { viewModel.setChannelVisibility($0, for: channel.id, on: surface) }
                         )
                     )
+                    .moveDisabled(channel.id == .mainLr)
                 }
                 .onMove { source, destination in
                     viewModel.moveSelectableChannels(fromOffsets: source, toOffset: destination, on: surface)
