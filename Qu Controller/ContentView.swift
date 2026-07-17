@@ -40,7 +40,7 @@ struct ContentView: View {
                     disconnectedContent
                 }
             }
-            .navigationTitle("Qu Controller")
+            .navigationTitle(isUsingMockConnection ? "Qu Controller Demo" : "Qu Controller")
             .toolbar {
                 if chromeModel.connectionState.phase == .connected {
                     ToolbarItem(placement: .topBarTrailing) {

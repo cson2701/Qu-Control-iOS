@@ -61,14 +61,16 @@ struct SettingsView: View {
                 }
 
 #if DEBUG
-                Section("Debug") {
-                    Toggle(
-                        "Use Mock Connection",
-                        isOn: Binding(
-                            get: { isUsingMockConnection },
-                            set: onSetUseMockConnection
+                if viewModel.connectionState.phase != .connected {
+                    Section {
+                        Toggle(
+                            "Demo Mode",
+                            isOn: Binding(
+                                get: { isUsingMockConnection },
+                                set: onSetUseMockConnection
+                            )
                         )
-                    )
+                    }
                 }
 #endif
             }

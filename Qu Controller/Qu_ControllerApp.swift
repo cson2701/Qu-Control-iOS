@@ -29,11 +29,13 @@ struct Qu_ControllerApp: App {
                 isUsingMockConnection: controllerMode.usesMockConnection,
                 onSetUseMockConnection: updateMockConnectionUsage(_:)
             )
+            .id(controllerMode)
         }
     }
 
     @MainActor
     private func updateMockConnectionUsage(_ usesMockConnection: Bool) {
+        let wasUsingMockConnection = controllerMode.usesMockConnection
         let nextMode: MixerControllerFactory.ControllerMode = usesMockConnection ? .mock : .network
         guard nextMode != controllerMode else {
             return
@@ -46,7 +48,8 @@ struct Qu_ControllerApp: App {
         controllerMode = nextMode
         MixerControllerFactory.setDebugControllerMode(nextMode)
         viewModel = MixerScreenViewModel(
-            controller: MixerControllerFactory.makeMixerController(mode: nextMode)
+            controller: MixerControllerFactory.makeMixerController(mode: nextMode),
+            startInitialConnectionFlow: !(wasUsingMockConnection && nextMode == .network)
         )
     }
 }

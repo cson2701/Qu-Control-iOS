@@ -36,7 +36,8 @@ final class MixerScreenViewModel: ObservableObject {
     init(
         controller: MixerController,
         defaultEndpoint: MixerEndpoint = MixerEndpoint(host: "192.168.4.120"),
-        userDefaults: UserDefaults = .standard
+        userDefaults: UserDefaults = .standard,
+        startInitialConnectionFlow: Bool = true
     ) {
         self.controller = controller
         self.defaultHost = defaultEndpoint.host
@@ -75,7 +76,9 @@ final class MixerScreenViewModel: ObservableObject {
 
         updateSignalMonitoringState(for: connectionState)
 
-        startInitialConnectionFlowIfNeeded()
+        if startInitialConnectionFlow {
+            startInitialConnectionFlowIfNeeded()
+        }
     }
 
     var visibleMainScreenChannels: [MixerChannelState] {
@@ -108,6 +111,10 @@ final class MixerScreenViewModel: ObservableObject {
 
     var supportsAutoDiscovery: Bool {
         controller is QuNetworkMixerController
+    }
+
+    var usesMockConnection: Bool {
+        controller is MockMixerController
     }
 
     var rememberedHost: String? {
@@ -159,7 +166,11 @@ final class MixerScreenViewModel: ObservableObject {
     }
 
     var statusMessage: String {
-        switch discoveryState {
+        if usesMockConnection, connectionState.phase == .disconnected {
+            return "Demo Mode is enabled. Connect to use the simulated mixer."
+        }
+
+        return switch discoveryState {
         case .scanning where connectionState.phase == .disconnected:
             "Scanning local network for a Qu mixer..."
         case .found(let discoveredHost) where connectionState.phase == .disconnected:
