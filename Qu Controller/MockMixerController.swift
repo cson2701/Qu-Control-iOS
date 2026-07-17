@@ -29,7 +29,7 @@ final class MockMixerController: MixerController {
     }
     @Published private var storedConnectionState = MixerConnectionState(
         phase: .disconnected,
-        message: "Mock controller disconnected",
+        message: "Demo mode disconnected",
         endpoint: nil
     )
 
@@ -60,7 +60,7 @@ final class MockMixerController: MixerController {
 
         storedConnectionState = MixerConnectionState(
             phase: .connected,
-            message: "Mock controller connected",
+            message: "Demo mode connected",
             endpoint: endpoint
         )
     }
@@ -68,7 +68,7 @@ final class MockMixerController: MixerController {
     func disconnect() {
         storedConnectionState = MixerConnectionState(
             phase: .disconnected,
-            message: "Mock controller disconnected",
+            message: "Demo mode disconnected",
             endpoint: nil
         )
     }
@@ -76,7 +76,7 @@ final class MockMixerController: MixerController {
     func shutdownMixer() async {
         storedConnectionState = MixerConnectionState(
             phase: .disconnected,
-            message: "Mock shutdown complete",
+            message: "Demo mode shutdown complete",
             endpoint: nil
         )
     }
