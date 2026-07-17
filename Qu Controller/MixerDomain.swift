@@ -134,16 +134,33 @@ enum MixerLayoutSurface: String, Codable {
 }
 
 struct MixerLayoutPreferences: Equatable, Codable {
-    var mainScreenChannelIDs: [MixerChannelID]
+    var mainScreenVisibleChannelIDs: [MixerChannelID]
+    var mainScreenOrderedChannelIDs: [MixerChannelID]
 
     static let `default` = MixerLayoutPreferences(
-        mainScreenChannelIDs: [.ch1, .ch2, .ch3, .ch4, .mainLr]
+        mainScreenVisibleChannelIDs: [.ch1, .ch2, .ch3, .ch4, .mainLr],
+        mainScreenOrderedChannelIDs: MixerChannelID.selectableChannels
     )
 
     func channelIDs(for surface: MixerLayoutSurface) -> [MixerChannelID] {
         switch surface {
         case .mainScreen:
-            sanitized(mainScreenChannelIDs, fallback: Self.default.mainScreenChannelIDs)
+            let visibleIDs = visibleChannelIDs(for: surface)
+            return orderedChannelIDs(for: surface).filter { visibleIDs.contains($0) }
+        }
+    }
+
+    func orderedChannelIDs(for surface: MixerLayoutSurface) -> [MixerChannelID] {
+        switch surface {
+        case .mainScreen:
+            sanitized(mainScreenOrderedChannelIDs, fallback: Self.default.mainScreenOrderedChannelIDs)
+        }
+    }
+
+    func visibleChannelIDs(for surface: MixerLayoutSurface) -> [MixerChannelID] {
+        switch surface {
+        case .mainScreen:
+            sanitized(mainScreenVisibleChannelIDs, fallback: Self.default.mainScreenVisibleChannelIDs)
         }
     }
 
@@ -152,7 +169,7 @@ struct MixerLayoutPreferences: Equatable, Codable {
         for channelID: MixerChannelID,
         surface: MixerLayoutSurface
     ) {
-        let currentIDs = channelIDs(for: surface)
+        let currentIDs = visibleChannelIDs(for: surface)
         let updatedIDs = if isVisible {
             Self.append(channelID, to: currentIDs)
         } else {
@@ -161,7 +178,28 @@ struct MixerLayoutPreferences: Equatable, Codable {
 
         switch surface {
         case .mainScreen:
-            mainScreenChannelIDs = updatedIDs
+            mainScreenVisibleChannelIDs = updatedIDs
+        }
+    }
+
+    mutating func moveChannelIDs(
+        fromOffsets source: IndexSet,
+        toOffset destination: Int,
+        on surface: MixerLayoutSurface
+    ) {
+        var updatedIDs = orderedChannelIDs(for: surface)
+        Self.move(&updatedIDs, fromOffsets: source, toOffset: destination)
+
+        switch surface {
+        case .mainScreen:
+            mainScreenOrderedChannelIDs = updatedIDs
+        }
+    }
+
+    mutating func resetChannelOrder(on surface: MixerLayoutSurface) {
+        switch surface {
+        case .mainScreen:
+            mainScreenOrderedChannelIDs = Self.default.mainScreenOrderedChannelIDs
         }
     }
 
@@ -171,12 +209,77 @@ struct MixerLayoutPreferences: Equatable, Codable {
     }
 
     private func sanitized(_ channelIDs: [MixerChannelID], fallback: [MixerChannelID]) -> [MixerChannelID] {
-        let visible = Self.selectable(channelIDs: channelIDs)
-        return visible.isEmpty ? fallback : visible
+        let sanitizedIDs = Self.sanitizedSelection(channelIDs, fallback: fallback)
+        return sanitizedIDs.isEmpty ? fallback : sanitizedIDs
     }
 
     private static func selectable(channelIDs: [MixerChannelID]) -> [MixerChannelID] {
         MixerChannelID.selectableChannels.filter { channelIDs.contains($0) }
+    }
+
+    private static func sanitizedSelection(_ channelIDs: [MixerChannelID], fallback: [MixerChannelID]) -> [MixerChannelID] {
+        var seen = Set<MixerChannelID>()
+        let preservedOrder = channelIDs.filter { channelID in
+            MixerChannelID.selectableChannels.contains(channelID) && seen.insert(channelID).inserted
+        }
+
+        if preservedOrder.isEmpty {
+            return fallback
+        }
+
+        let missingChannelIDs = MixerChannelID.selectableChannels.filter { !seen.contains($0) }
+        return preservedOrder + missingChannelIDs
+    }
+
+    private static func move(_ channelIDs: inout [MixerChannelID], fromOffsets source: IndexSet, toOffset destination: Int) {
+        let movingItems = source.map { channelIDs[$0] }
+
+        for index in source.sorted(by: >) {
+            channelIDs.remove(at: index)
+        }
+
+        let insertionIndex = min(destination, channelIDs.count)
+        channelIDs.insert(contentsOf: movingItems, at: insertionIndex)
+    }
+
+    init(
+        mainScreenVisibleChannelIDs: [MixerChannelID],
+        mainScreenOrderedChannelIDs: [MixerChannelID]
+    ) {
+        self.mainScreenVisibleChannelIDs = mainScreenVisibleChannelIDs
+        self.mainScreenOrderedChannelIDs = mainScreenOrderedChannelIDs
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        if let visibleIDs = try container.decodeIfPresent([MixerChannelID].self, forKey: .mainScreenVisibleChannelIDs),
+           let orderedIDs = try container.decodeIfPresent([MixerChannelID].self, forKey: .mainScreenOrderedChannelIDs) {
+            self.init(
+                mainScreenVisibleChannelIDs: visibleIDs,
+                mainScreenOrderedChannelIDs: orderedIDs
+            )
+            return
+        }
+
+        let legacyVisibleIDs = try container.decodeIfPresent([MixerChannelID].self, forKey: .mainScreenChannelIDs)
+            ?? Self.default.mainScreenVisibleChannelIDs
+        self.init(
+            mainScreenVisibleChannelIDs: legacyVisibleIDs,
+            mainScreenOrderedChannelIDs: Self.default.mainScreenOrderedChannelIDs
+        )
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case mainScreenVisibleChannelIDs
+        case mainScreenOrderedChannelIDs
+        case mainScreenChannelIDs
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(mainScreenVisibleChannelIDs, forKey: .mainScreenVisibleChannelIDs)
+        try container.encode(mainScreenOrderedChannelIDs, forKey: .mainScreenOrderedChannelIDs)
     }
 }
 

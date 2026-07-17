@@ -41,14 +41,8 @@ struct SettingsView: View {
                 }
 
                 Section("Visible Channels") {
-                    ForEach(viewModel.selectableChannels) { channel in
-                        Toggle(
-                            channel.displayName,
-                            isOn: Binding(
-                                get: { viewModel.isChannelVisible(channel.id, on: .mainScreen) },
-                                set: { viewModel.setChannelVisibility($0, for: channel.id, on: .mainScreen) }
-                            )
-                        )
+                    NavigationLink("Manage Channels") {
+                        ChannelManagementView(viewModel: viewModel, surface: .mainScreen)
                     }
                 }
 
@@ -71,6 +65,7 @@ struct SettingsView: View {
                     Button("Done") {
                         dismiss()
                     }
+                    .tint(.primary)
                 }
             }
         }

@@ -107,7 +107,10 @@ final class MixerScreenViewModel: ObservableObject {
     }
 
     var selectableChannels: [MixerChannelState] {
-        displayChannels
+        let orderedIDs = layoutPreferences.orderedChannelIDs(for: .mainScreen)
+        let channelsByID = Dictionary(uniqueKeysWithValues: displayChannels.map { ($0.id, $0) })
+
+        return orderedIDs.compactMap { channelsByID[$0] }
     }
 
     private var displayChannels: [MixerChannelState] {
@@ -206,6 +209,18 @@ final class MixerScreenViewModel: ObservableObject {
 
     func setChannelVisibility(_ isVisible: Bool, for channelID: MixerChannelID, on surface: MixerLayoutSurface) {
         layoutPreferences.setChannelVisibility(isVisible, for: channelID, surface: surface)
+        persistLayoutPreferences()
+        objectWillChange.send()
+    }
+
+    func moveSelectableChannels(fromOffsets source: IndexSet, toOffset destination: Int, on surface: MixerLayoutSurface) {
+        layoutPreferences.moveChannelIDs(fromOffsets: source, toOffset: destination, on: surface)
+        persistLayoutPreferences()
+        objectWillChange.send()
+    }
+
+    func resetChannelOrder(on surface: MixerLayoutSurface) {
+        layoutPreferences.resetChannelOrder(on: surface)
         persistLayoutPreferences()
         objectWillChange.send()
     }
