@@ -18,6 +18,7 @@ struct ContentView: View {
     @State private var isShowingSettings = false
     @State private var isShowingShutdownConfirmation = false
     @State private var isShowingStatusDetails = false
+    @State private var isShowingConnectionHelp = false
 
     init(
         viewModel: MixerScreenViewModel,
@@ -88,6 +89,11 @@ struct ContentView: View {
             .presentationDetents([.height(chromeModel.statusSheetHeight)])
             .presentationDragIndicator(.visible)
         }
+        .sheet(isPresented: $isShowingConnectionHelp) {
+            ConnectionHelpSheet()
+                .presentationDetents([.medium])
+                .presentationDragIndicator(.visible)
+        }
     }
 
     private var connectedStatusButton: some View {
@@ -131,16 +137,23 @@ struct ContentView: View {
         ScrollView {
             VStack(spacing: 24) {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Connect to a Qu mixer")
-                        .font(.title2.weight(.semibold))
+                    HStack(spacing: 8) {
+                        Text("Connect to a Qu mixer")
+                            .font(.title2.weight(.semibold))
 
-                    Text("Enter the mixer IP address directly or scan the local network to find it.")
-                        .foregroundStyle(.secondary)
+                        Button {
+                            isShowingConnectionHelp = true
+                        } label: {
+                            Image(systemName: "info.circle")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Mixer IP")
+                    Text("Mixer IP address")
                         .font(.headline)
 
                     IPv4AddressTextField(
@@ -201,6 +214,47 @@ struct ContentView: View {
                 viewModel.updateHost(newValue)
             }
         )
+    }
+}
+
+private struct ConnectionHelpSheet: View {
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Connect to a Qu mixer")
+                            .font(.title3.weight(.semibold))
+
+                        Text("Enter the mixer IP address directly or scan the local network to find it.")
+                            .foregroundStyle(.secondary)
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Where to find the mixer IP address")
+                            .font(.headline)
+
+                        Text("On the mixer, press the physical **Setup** button, then on the touchscreen tap **Utility** > **Diagnostics**. Locate the current IP address.")
+                            .foregroundStyle(.secondary)
+
+                        Text(.init("To set up the IP address, press the **Setup** button, then tap **Control** > **Network**. See page 68 of the [Qu Mixer Reference Guide](https://www.allen-heath.com/content/uploads/2023/06/Qu-Mixer-Reference-Guide-AP9372_10.pdf) for more detail."))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Tip")
+                            .font(.headline)
+
+                        Text("If you do not know the address, use Find Mixer to scan the local network automatically.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(24)
+            }
+            .navigationTitle("Connection Help")
+            .navigationBarTitleDisplayMode(.inline)
+        }
     }
 }
 
