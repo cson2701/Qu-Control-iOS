@@ -50,19 +50,30 @@ private struct ChannelManagementRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: showsSubtitle ? 2 : 0) {
                 Text(channel.displayName)
                     .font(.body)
 
-                Text(channel.id.defaultDisplayName)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if showsSubtitle {
+                    Text(channel.id.defaultDisplayName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Spacer()
 
             Toggle("", isOn: $isVisible)
                 .labelsHidden()
+                .disabled(isVisibilityLocked)
         }
+    }
+
+    private var showsSubtitle: Bool {
+        channel.displayName != channel.id.defaultDisplayName
+    }
+
+    private var isVisibilityLocked: Bool {
+        channel.id == .mainLr
     }
 }

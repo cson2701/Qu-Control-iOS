@@ -154,13 +154,15 @@ struct HorizontalMixerChannelRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .center, spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: showsSubtitle ? 2 : 0) {
                     Text(channel.displayName)
                         .font(.headline)
 
-                    Text(channel.id.defaultDisplayName)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if showsSubtitle {
+                        Text(channel.id.defaultDisplayName)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Spacer()
@@ -197,6 +199,10 @@ struct HorizontalMixerChannelRow: View {
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
+
+    private var showsSubtitle: Bool {
+        channel.displayName != channel.id.defaultDisplayName
+    }
 }
 
 private struct VerticalMixerChannelCard: View {
@@ -209,17 +215,26 @@ private struct VerticalMixerChannelCard: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            HStack(spacing: 6) {
-                if showsSignalIndicator {
-                    Circle()
-                        .fill(isInteractive && channel.hasSignal ? Color.green : Color.gray.opacity(0.35))
-                        .frame(width: 8, height: 8)
+            VStack(spacing: showsSubtitle ? 4 : 0) {
+                HStack(spacing: 6) {
+                    if showsSignalIndicator {
+                        Circle()
+                            .fill(isInteractive && channel.hasSignal ? Color.green : Color.gray.opacity(0.35))
+                            .frame(width: 8, height: 8)
+                    }
+
+                    Text(channel.displayName)
+                        .font(.headline.weight(.semibold))
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
                 }
 
-                Text(channel.displayName)
-                    .font(.headline.weight(.semibold))
-                    .lineLimit(2)
-                    .multilineTextAlignment(.center)
+                if showsSubtitle {
+                    Text(channel.id.defaultDisplayName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
             .frame(height: 44)
 
@@ -249,6 +264,10 @@ private struct VerticalMixerChannelCard: View {
         .padding(.vertical, 16)
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private var showsSubtitle: Bool {
+        channel.displayName != channel.id.defaultDisplayName
     }
 }
 
