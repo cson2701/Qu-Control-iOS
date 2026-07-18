@@ -60,7 +60,7 @@ final class QuRelayMixerController: MixerController {
 
     func shutdownMixer() async {
         do {
-            try await send(.shutdown())
+            try await send(.shutdownMixer())
         } catch {
             await handleConnectionFailure(error, endpoint: relayEndpoint, prefix: "Shutdown failed")
         }
