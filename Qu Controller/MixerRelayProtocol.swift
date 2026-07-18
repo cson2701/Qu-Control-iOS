@@ -27,9 +27,9 @@ struct MixerRelayClientCommand: Encodable {
         )
     }
 
-    static func shutdown() -> MixerRelayClientCommand {
+    static func shutdownMixer() -> MixerRelayClientCommand {
         MixerRelayClientCommand(
-            type: "shutdown",
+            type: "shutdownMixer",
             channel: nil,
             level: nil,
             isMuted: nil,
