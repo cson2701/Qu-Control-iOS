@@ -9,14 +9,20 @@ import SwiftUI
 
 @main
 struct Qu_ControllerApp: App {
-    @State private var controllerMode: MixerControllerFactory.ControllerMode
+    @State private var transportMode: MixerTransportMode
+    @State private var isUsingMockConnection: Bool
     @State private var viewModel: MixerScreenViewModel
 
     init() {
         let initialControllerMode = MixerControllerFactory.currentControllerMode()
-        _controllerMode = State(initialValue: initialControllerMode)
+        let initialTransportMode = initialControllerMode.transportMode
+            ?? MixerControllerFactory.currentTransportMode()
+        _transportMode = State(initialValue: initialTransportMode)
+        _isUsingMockConnection = State(initialValue: initialControllerMode.usesMockConnection)
         _viewModel = State(
             initialValue: MixerScreenViewModel(
+                controllerMode: initialControllerMode,
+                transportMode: initialTransportMode,
                 controller: MixerControllerFactory.makeMixerController(mode: initialControllerMode)
             )
         )
@@ -26,30 +32,63 @@ struct Qu_ControllerApp: App {
         WindowGroup {
             ContentView(
                 viewModel: viewModel,
-                isUsingMockConnection: controllerMode.usesMockConnection,
-                onSetUseMockConnection: updateMockConnectionUsage(_:)
+                isUsingMockConnection: isUsingMockConnection,
+                transportMode: transportMode,
+                onSetUseMockConnection: updateMockConnectionUsage(_:),
+                onSetTransportMode: updateTransportMode(_:)
             )
-            .id(controllerMode)
+            .id("\(transportMode.rawValue)-\(isUsingMockConnection)")
         }
     }
 
     @MainActor
     private func updateMockConnectionUsage(_ usesMockConnection: Bool) {
-        let wasUsingMockConnection = controllerMode.usesMockConnection
-        let nextMode: MixerControllerFactory.ControllerMode = usesMockConnection ? .mock : .network
-        guard nextMode != controllerMode else {
+        guard usesMockConnection != isUsingMockConnection else {
             return
         }
 
-        if usesMockConnection {
-            viewModel.stopScanningForMixer()
+        isUsingMockConnection = usesMockConnection
+        let nextMode = controllerMode(for: transportMode, usesMockConnection: usesMockConnection)
+        MixerControllerFactory.setDebugControllerMode(nextMode)
+        rebuildViewModel(startInitialConnectionFlow: !usesMockConnection)
+    }
+
+    @MainActor
+    private func updateTransportMode(_ transportMode: MixerTransportMode) {
+        guard transportMode != self.transportMode else {
+            return
         }
 
-        controllerMode = nextMode
-        MixerControllerFactory.setDebugControllerMode(nextMode)
+        self.transportMode = transportMode
+        MixerControllerFactory.setTransportMode(transportMode)
+        rebuildViewModel(startInitialConnectionFlow: !isUsingMockConnection)
+    }
+
+    @MainActor
+    private func rebuildViewModel(startInitialConnectionFlow: Bool) {
+        viewModel.disconnectCurrentSession()
+        let nextMode = controllerMode(for: transportMode, usesMockConnection: isUsingMockConnection)
         viewModel = MixerScreenViewModel(
+            controllerMode: nextMode,
+            transportMode: transportMode,
             controller: MixerControllerFactory.makeMixerController(mode: nextMode),
-            startInitialConnectionFlow: !(wasUsingMockConnection && nextMode == .network)
+            startInitialConnectionFlow: startInitialConnectionFlow
         )
+    }
+
+    private func controllerMode(
+        for transportMode: MixerTransportMode,
+        usesMockConnection: Bool
+    ) -> MixerControllerFactory.ControllerMode {
+        if usesMockConnection {
+            return .mock
+        }
+
+        return switch transportMode {
+        case .direct:
+            .direct
+        case .relay:
+            .relay
+        }
     }
 }

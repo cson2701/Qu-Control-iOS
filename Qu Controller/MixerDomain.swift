@@ -305,6 +305,29 @@ struct MixerEndpoint: Equatable {
     var port: Int = 51_325
 }
 
+enum MixerTransportMode: String, CaseIterable, Equatable {
+    case direct
+    case relay
+
+    var defaultEndpoint: MixerEndpoint {
+        switch self {
+        case .direct:
+            MixerEndpoint(host: "192.168.4.120", port: 51_325)
+        case .relay:
+            MixerEndpoint(host: "192.168.4.120", port: 51_326)
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .direct:
+            "Direct Mixer"
+        case .relay:
+            "Mac Relay"
+        }
+    }
+}
+
 enum MixerConnectionPhase: Equatable {
     case disconnected
     case connecting

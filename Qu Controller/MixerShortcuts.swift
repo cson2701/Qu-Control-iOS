@@ -8,7 +8,7 @@ import AppIntents
 struct ShutdownMixerIntent: AppIntent {
     static var title: LocalizedStringResource = "Shut Down Mixer"
     static var description = IntentDescription(
-        "Connects to the last known Qu mixer IP address and shuts it down."
+        "Connects to the last used direct mixer or relay endpoint and shuts the mixer down."
     )
     static var openAppWhenRun: Bool = false
 

@@ -719,7 +719,7 @@ final class QuNetworkMixerController: MixerController {
         return "\(prefix): \(rawMessage)"
     }
 
-    private static func makeInitialChannels() -> [MixerChannelState] {
+    static func makeInitialChannels() -> [MixerChannelState] {
         MixerChannelID.selectableChannels.map { channelID in
             MixerChannelState(
                 id: channelID,

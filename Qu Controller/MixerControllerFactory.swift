@@ -7,7 +7,8 @@ import Foundation
 
 enum MixerControllerFactory {
     enum ControllerMode: Equatable {
-        case network
+        case direct
+        case relay
         case mock
     }
 
@@ -16,15 +17,19 @@ enum MixerControllerFactory {
     }
 
     @MainActor
-    private static let sharedNetworkController = QuNetworkMixerController()
+    private static let sharedDirectController = QuNetworkMixerController()
+    @MainActor
+    private static let sharedRelayController = QuRelayMixerController()
 
     @MainActor
     static func makeMixerController(mode: ControllerMode) -> MixerController {
         switch mode {
+        case .direct:
+            return sharedDirectController
+        case .relay:
+            return sharedRelayController
         case .mock:
             return MockMixerController()
-        case .network:
-            return sharedNetworkController
         }
     }
 
@@ -39,22 +44,51 @@ enum MixerControllerFactory {
         }
 #endif
 
-        return .network
+        let transportMode = currentTransportMode(userDefaults: userDefaults)
+
+        return switch transportMode {
+        case .direct:
+            .direct
+        case .relay:
+            .relay
+        }
+    }
+
+    static func currentTransportMode(userDefaults: UserDefaults = .standard) -> MixerTransportMode {
+        MixerTransportMode(
+            rawValue: userDefaults.string(forKey: AppSettingsKey.transportMode) ?? ""
+        ) ?? .direct
     }
 
     static func setDebugControllerMode(_ mode: ControllerMode, userDefaults: UserDefaults = .standard) {
 #if DEBUG
         let storedValue = switch mode {
-        case .network: "network"
+        case .direct: "direct"
+        case .relay: "relay"
         case .mock: "mock"
         }
         userDefaults.set(storedValue, forKey: StorageKey.debugControllerMode)
 #endif
+    }
+
+    static func setTransportMode(_ mode: MixerTransportMode, userDefaults: UserDefaults = .standard) {
+        userDefaults.set(mode.rawValue, forKey: AppSettingsKey.transportMode)
     }
 }
 
 extension MixerControllerFactory.ControllerMode {
     var usesMockConnection: Bool {
         self == .mock
+    }
+
+    var transportMode: MixerTransportMode? {
+        switch self {
+        case .direct:
+            .direct
+        case .relay:
+            .relay
+        case .mock:
+            nil
+        }
     }
 }

@@ -25,24 +25,32 @@ final class MixerScreenViewModel: ObservableObject {
     @Published private(set) var autoScanOnLaunch: Bool
     @Published private(set) var autoConnectLastKnownHostOnLaunch: Bool
     @Published private(set) var showSignalIndicators: Bool
+    @Published private(set) var relayPort: Int
 
+    private let controllerMode: MixerControllerFactory.ControllerMode
+    private let transportMode: MixerTransportMode
     private let controller: MixerController
-    private let defaultHost: String
     private let userDefaults: UserDefaults
     private var cancellables = Set<AnyCancellable>()
     private var discoveryTask: Task<Void, Never>?
     private var launchAutoConnectHost: String?
 
     init(
+        controllerMode: MixerControllerFactory.ControllerMode,
+        transportMode: MixerTransportMode,
         controller: MixerController,
-        defaultEndpoint: MixerEndpoint = MixerEndpoint(host: "192.168.4.120"),
         userDefaults: UserDefaults = .standard,
         startInitialConnectionFlow: Bool = true
     ) {
+        self.controllerMode = controllerMode
+        self.transportMode = transportMode
         self.controller = controller
-        self.defaultHost = defaultEndpoint.host
         self.userDefaults = userDefaults
-        host = Self.loadLastSuccessfulHost(from: userDefaults) ?? defaultEndpoint.host
+        let rememberedEndpoint = Self.loadRememberedEndpoint(
+            from: userDefaults,
+            transportMode: transportMode
+        )
+        host = rememberedEndpoint.host
         channels = controller.channels
         connectionState = controller.connectionState
         layoutPreferences = Self.loadLayoutPreferences(from: userDefaults)
@@ -51,6 +59,7 @@ final class MixerScreenViewModel: ObservableObject {
         autoScanOnLaunch = Self.loadAutoScanOnLaunch(from: userDefaults)
         autoConnectLastKnownHostOnLaunch = Self.loadAutoConnectLastKnownHostOnLaunch(from: userDefaults)
         showSignalIndicators = Self.loadShowSignalIndicators(from: userDefaults)
+        relayPort = Self.loadRelayPort(from: userDefaults)
 
         controller.channelsPublisher
             .receive(on: DispatchQueue.main)
@@ -109,20 +118,33 @@ final class MixerScreenViewModel: ObservableObject {
         $showSignalIndicators.eraseToAnyPublisher()
     }
 
+    var selectedTransportMode: MixerTransportMode {
+        transportMode
+    }
+
     var supportsAutoDiscovery: Bool {
-        controller is QuNetworkMixerController
+        transportMode == .direct && controllerMode != .mock
     }
 
     var usesMockConnection: Bool {
-        controller is MockMixerController
+        controllerMode == .mock
     }
 
     var rememberedHost: String? {
-        Self.loadLastSuccessfulHost(from: userDefaults)
+        Self.loadRememberedEndpoint(from: userDefaults, transportMode: transportMode).host
     }
 
     var hostPlaceholder: String {
-        rememberedHost ?? defaultHost
+        rememberedHost ?? transportMode.defaultEndpoint.host
+    }
+
+    var currentPort: Int {
+        switch transportMode {
+        case .direct:
+            transportMode.defaultEndpoint.port
+        case .relay:
+            relayPort
+        }
     }
 
     var selectableChannels: [MixerChannelState] {
@@ -170,6 +192,10 @@ final class MixerScreenViewModel: ObservableObject {
             return "Demo Mode is enabled. Connect to use the simulated mixer."
         }
 
+        if transportMode == .relay {
+            return connectionState.message
+        }
+
         return switch discoveryState {
         case .scanning where connectionState.phase == .disconnected:
             "Scanning local network for a Qu mixer..."
@@ -187,7 +213,7 @@ final class MixerScreenViewModel: ObservableObject {
     }
 
     var isAutoScanAvailable: Bool {
-        controller is QuNetworkMixerController
+        transportMode == .direct && controllerMode != .mock
             && isRetryableDiscoveryState
             && !isScanningForMixer
     }
@@ -205,9 +231,14 @@ final class MixerScreenViewModel: ObservableObject {
                 ? rememberedHost ?? host
                 : host
             Task {
-                await controller.connect(to: MixerEndpoint(host: connectionHost))
+                await controller.connect(to: MixerEndpoint(host: connectionHost, port: currentPort))
             }
         }
+    }
+
+    func disconnectCurrentSession() {
+        stopScanningForMixer()
+        controller.disconnect()
     }
 
     func updateHost(_ host: String) {
@@ -285,8 +316,17 @@ final class MixerScreenViewModel: ObservableObject {
         updateSignalMonitoringState(for: connectionState)
     }
 
+    func setRelayPort(_ port: Int) {
+        guard (1 ... 65_535).contains(port) else {
+            return
+        }
+
+        relayPort = port
+        userDefaults.set(port, forKey: AppSettingsKey.relayPort)
+    }
+
     func scanForMixer() {
-        guard controller is QuNetworkMixerController, !isScanningForMixer else {
+        guard transportMode == .direct, controllerMode != .mock, !isScanningForMixer else {
             return
         }
 
@@ -328,13 +368,25 @@ final class MixerScreenViewModel: ObservableObject {
         return preferences
     }
 
-    private static func loadLastSuccessfulHost(from userDefaults: UserDefaults) -> String? {
-        guard let host = userDefaults.string(forKey: AppSettingsKey.lastSuccessfulHost),
-              !host.isEmpty else {
-            return nil
+    private static func loadRememberedEndpoint(
+        from userDefaults: UserDefaults,
+        transportMode: MixerTransportMode
+    ) -> MixerEndpoint {
+        switch transportMode {
+        case .direct:
+            let host = userDefaults.string(forKey: AppSettingsKey.lastSuccessfulHost)
+            return MixerEndpoint(
+                host: (host?.isEmpty == false ? host : nil) ?? transportMode.defaultEndpoint.host,
+                port: transportMode.defaultEndpoint.port
+            )
+        case .relay:
+            let host = userDefaults.string(forKey: AppSettingsKey.relayLastSuccessfulHost)
+            let port = loadRelayPort(from: userDefaults)
+            return MixerEndpoint(
+                host: (host?.isEmpty == false ? host : nil) ?? transportMode.defaultEndpoint.host,
+                port: port
+            )
         }
-
-        return host
     }
 
     private static func loadConfirmBeforeShutdown(from userDefaults: UserDefaults) -> Bool {
@@ -377,6 +429,11 @@ final class MixerScreenViewModel: ObservableObject {
         return userDefaults.bool(forKey: AppSettingsKey.showSignalIndicators)
     }
 
+    private static func loadRelayPort(from userDefaults: UserDefaults) -> Int {
+        let storedPort = userDefaults.integer(forKey: AppSettingsKey.relayPort)
+        return (1 ... 65_535).contains(storedPort) ? storedPort : MixerTransportMode.relay.defaultEndpoint.port
+    }
+
     private func updateSignalMonitoringState(for state: MixerConnectionState) {
         controller.setSignalMonitoringEnabled(showSignalIndicators && state.phase == .connected)
     }
@@ -391,43 +448,52 @@ final class MixerScreenViewModel: ObservableObject {
     }
 
     private func startInitialConnectionFlowIfNeeded() {
-        guard controller is QuNetworkMixerController else {
+        guard controllerMode != .mock else {
             return
         }
 
-        guard autoScanOnLaunch || autoConnectLastKnownHostOnLaunch else {
+        guard autoConnectLastKnownHostOnLaunch || (transportMode == .direct && autoScanOnLaunch) else {
             return
         }
 
-        guard autoConnectLastKnownHostOnLaunch,
-              let lastSuccessfulHost = Self.loadLastSuccessfulHost(from: userDefaults) else {
-            if autoScanOnLaunch {
+        let rememberedEndpoint = Self.loadRememberedEndpoint(from: userDefaults, transportMode: transportMode)
+
+        guard autoConnectLastKnownHostOnLaunch else {
+            if transportMode == .direct && autoScanOnLaunch {
                 startDiscovery()
             }
             return
         }
 
-        launchAutoConnectHost = lastSuccessfulHost
-        host = lastSuccessfulHost
+        launchAutoConnectHost = rememberedEndpoint.host
+        host = rememberedEndpoint.host
 
         Task { @MainActor [weak self] in
             guard let self else {
                 return
             }
 
-            let discovery = QuMixerDiscovery()
-            if await discovery.isMixerReachable(at: lastSuccessfulHost) {
-                await self.controller.connect(to: MixerEndpoint(host: lastSuccessfulHost))
+            if self.transportMode == .relay {
+                await self.controller.connect(to: rememberedEndpoint)
             } else {
-                self.launchAutoConnectHost = nil
-                if self.autoScanOnLaunch {
-                    self.startDiscovery()
+                let discovery = QuMixerDiscovery()
+                if await discovery.isMixerReachable(at: rememberedEndpoint.host) {
+                    await self.controller.connect(to: rememberedEndpoint)
+                } else {
+                    self.launchAutoConnectHost = nil
+                    if self.autoScanOnLaunch {
+                        self.startDiscovery()
+                    }
                 }
             }
         }
     }
 
     private func startDiscoveryFallbackIfNeeded(for state: MixerConnectionState) {
+        guard transportMode == .direct else {
+            return
+        }
+
         guard autoScanOnLaunch else {
             return
         }
@@ -452,7 +518,10 @@ final class MixerScreenViewModel: ObservableObject {
             }
 
             let discovery = QuMixerDiscovery()
-            let preferredHost = Self.loadLastSuccessfulHost(from: self.userDefaults)
+            let preferredHost = Self.loadRememberedEndpoint(
+                from: self.userDefaults,
+                transportMode: .direct
+            ).host
             if let discoveredHost = await discovery.discoverMixer(preferredHost: preferredHost) {
                 self.host = discoveredHost
                 if self.autoConnectAfterDiscovery {
@@ -479,15 +548,22 @@ final class MixerScreenViewModel: ObservableObject {
         discoveryTask = nil
         discoveryState = .idle
 
-        guard let successfulHost = state.endpoint?.host,
-              !successfulHost.isEmpty else {
-            return
+        let successfulHost: String
+        switch transportMode {
+        case .direct:
+            guard let endpointHost = state.endpoint?.host,
+                  !endpointHost.isEmpty else {
+                return
+            }
+            successfulHost = endpointHost
+            if host != successfulHost {
+                host = successfulHost
+            }
+            userDefaults.set(successfulHost, forKey: AppSettingsKey.lastSuccessfulHost)
+        case .relay:
+            let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
+            successfulHost = trimmedHost.isEmpty ? hostPlaceholder : trimmedHost
+            userDefaults.set(successfulHost, forKey: AppSettingsKey.relayLastSuccessfulHost)
         }
-
-        if host != successfulHost {
-            host = successfulHost
-        }
-
-        userDefaults.set(successfulHost, forKey: AppSettingsKey.lastSuccessfulHost)
     }
 }

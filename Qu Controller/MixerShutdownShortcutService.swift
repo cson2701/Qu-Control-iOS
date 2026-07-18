@@ -18,7 +18,7 @@ final class MixerShutdownShortcutService {
     init(
         userDefaults: UserDefaults = .standard,
         controllerFactory: @escaping @MainActor () -> MixerController = {
-            MixerControllerFactory.makeMixerController(mode: .network)
+            MixerControllerFactory.makeMixerController(mode: MixerControllerFactory.currentControllerMode())
         }
     ) {
         self.userDefaults = userDefaults
@@ -27,42 +27,42 @@ final class MixerShutdownShortcutService {
 
     func shutdownMixerUsingRememberedHost() async throws -> Result {
         let controller = controllerFactory()
-        guard let rememberedHost = lastSuccessfulHost() else {
+        let transportMode = MixerControllerFactory.currentTransportMode(userDefaults: userDefaults)
+        guard let rememberedEndpoint = rememberedEndpoint(for: transportMode) else {
             throw ShortcutShutdownError.noRememberedHost
         }
 
-        return try await connectAndShutdown(at: rememberedHost, using: controller)
+        return try await connectAndShutdown(at: rememberedEndpoint, using: controller)
     }
 
     private func connectAndShutdown(
-        at host: String,
+        at endpoint: MixerEndpoint,
         using controller: MixerController
     ) async throws -> Result {
-        let endpoint = MixerEndpoint(host: host)
         if !isConnected(controller, to: endpoint) {
             await controller.connect(to: endpoint)
         }
 
         let connectedState = try await waitForConnectionOutcome(for: controller, endpoint: endpoint)
         guard connectedState.phase == .connected else {
-            throw ShortcutShutdownError.connectionFailed(host: host, message: connectedState.message)
+            throw ShortcutShutdownError.connectionFailed(host: endpoint.host, message: connectedState.message)
         }
 
-        userDefaults.set(host, forKey: AppSettingsKey.lastSuccessfulHost)
+        remember(endpoint)
 
         await controller.shutdownMixer()
         let shutdownState = controller.connectionState
 
         if shutdownState.phase == .disconnected,
            shutdownState.message.contains("Shutdown command sent") {
-            return Result(host: host)
+            return Result(host: endpoint.host)
         }
 
         if shutdownState.phase == .error {
-            throw ShortcutShutdownError.shutdownFailed(host: host, message: shutdownState.message)
+            throw ShortcutShutdownError.shutdownFailed(host: endpoint.host, message: shutdownState.message)
         }
 
-        throw ShortcutShutdownError.shutdownFailed(host: host, message: shutdownState.message)
+        throw ShortcutShutdownError.shutdownFailed(host: endpoint.host, message: shutdownState.message)
     }
 
     private func waitForConnectionOutcome(
@@ -108,13 +108,38 @@ final class MixerShutdownShortcutService {
         return connectionState.phase == .connected && connectionState.endpoint == endpoint
     }
 
-    private func lastSuccessfulHost() -> String? {
-        guard let host = userDefaults.string(forKey: AppSettingsKey.lastSuccessfulHost),
-              !host.isEmpty else {
-            return nil
-        }
+    private func rememberedEndpoint(for transportMode: MixerTransportMode) -> MixerEndpoint? {
+        switch transportMode {
+        case .direct:
+            guard let host = userDefaults.string(forKey: AppSettingsKey.lastSuccessfulHost),
+                  !host.isEmpty else {
+                return nil
+            }
 
-        return host
+            return MixerEndpoint(host: host)
+        case .relay:
+            guard let host = userDefaults.string(forKey: AppSettingsKey.relayLastSuccessfulHost),
+                  !host.isEmpty else {
+                return nil
+            }
+
+            let storedPort = userDefaults.integer(forKey: AppSettingsKey.relayPort)
+            let port = (1 ... 65_535).contains(storedPort)
+                ? storedPort
+                : MixerTransportMode.relay.defaultEndpoint.port
+            return MixerEndpoint(host: host, port: port)
+        }
+    }
+
+    private func remember(_ endpoint: MixerEndpoint) {
+        let transportMode = MixerControllerFactory.currentTransportMode(userDefaults: userDefaults)
+        switch transportMode {
+        case .direct:
+            userDefaults.set(endpoint.host, forKey: AppSettingsKey.lastSuccessfulHost)
+        case .relay:
+            userDefaults.set(endpoint.host, forKey: AppSettingsKey.relayLastSuccessfulHost)
+            userDefaults.set(endpoint.port, forKey: AppSettingsKey.relayPort)
+        }
     }
 }
 
