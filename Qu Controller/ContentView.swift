@@ -312,7 +312,7 @@ private struct ConnectionHelpSheet: View {
                     }
 
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(transportMode == .direct ? "Where to find the mixer IP address" : "What to enter for relay mode")
+                        Text(transportMode == .direct ? "Where to find the mixer IP address" : "Where to find the Mac's IP address")
                             .font(.headline)
 
                         if transportMode == .direct {
@@ -322,10 +322,7 @@ private struct ConnectionHelpSheet: View {
                             Text(.init("To set up the IP address, press the **Setup** button, then tap **Control** > **Network**. See page 68 of the [Qu Mixer Reference Guide](https://www.allen-heath.com/content/uploads/2023/06/Qu-Mixer-Reference-Guide-AP9372_10.pdf) for more detail."))
                                 .foregroundStyle(.secondary)
                         } else {
-                            Text("Use the IP address of the Mac running Qu Controller Mac, not the mixer IP address.")
-                                .foregroundStyle(.secondary)
-
-                            Text("Use the relay port shown in Qu Controller Mac Settings. The default relay port is 51326.")
+                            Text("Open Qu Controller Mac, then go to Settings and the Relay pane to find the IP address and port.")
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -337,7 +334,7 @@ private struct ConnectionHelpSheet: View {
                         Text(
                             transportMode == .direct
                                 ? "If you do not know the address, use Find Mixer to scan the local network automatically."
-                                : "Relay mode does not support mixer discovery. Make sure the Mac relay is enabled and reachable on the local network."
+                                : "Make sure Relay is enabled in Qu Controller Mac and that your Mac and this device are on the same network."
                         )
                             .foregroundStyle(.secondary)
                     }
