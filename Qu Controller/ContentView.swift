@@ -13,10 +13,10 @@ struct ContentView: View {
     let viewModel: MixerScreenViewModel
     let isUsingMockConnection: Bool
     let transportMode: MixerTransportMode
-    let onSetUseMockConnection: (Bool) -> Void
-    let onSetTransportMode: (MixerTransportMode) -> Void
+    let onApplyConnectionMode: (ConnectionModeOption) -> Void
 
     @StateObject private var chromeModel: ContentChromeModel
+    @State private var relayPortText: String
     @State private var isShowingSettings = false
     @State private var isShowingShutdownConfirmation = false
     @State private var isShowingStatusDetails = false
@@ -26,15 +26,14 @@ struct ContentView: View {
         viewModel: MixerScreenViewModel,
         isUsingMockConnection: Bool,
         transportMode: MixerTransportMode,
-        onSetUseMockConnection: @escaping (Bool) -> Void,
-        onSetTransportMode: @escaping (MixerTransportMode) -> Void
+        onApplyConnectionMode: @escaping (ConnectionModeOption) -> Void
     ) {
         self.viewModel = viewModel
         self.isUsingMockConnection = isUsingMockConnection
         self.transportMode = transportMode
-        self.onSetUseMockConnection = onSetUseMockConnection
-        self.onSetTransportMode = onSetTransportMode
+        self.onApplyConnectionMode = onApplyConnectionMode
         _chromeModel = StateObject(wrappedValue: ContentChromeModel(viewModel: viewModel))
+        _relayPortText = State(initialValue: String(viewModel.relayPort))
     }
 
     var body: some View {
@@ -72,8 +71,7 @@ struct ContentView: View {
                 viewModel: viewModel,
                 isUsingMockConnection: isUsingMockConnection,
                 transportMode: transportMode,
-                onSetUseMockConnection: onSetUseMockConnection,
-                onSetTransportMode: onSetTransportMode
+                onApplyConnectionMode: onApplyConnectionMode
             )
         }
         .confirmationDialog(
@@ -98,7 +96,7 @@ struct ContentView: View {
             .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $isShowingConnectionHelp) {
-            ConnectionHelpSheet()
+            ConnectionHelpSheet(transportMode: transportMode)
                 .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
         }
@@ -146,7 +144,7 @@ struct ContentView: View {
             VStack(spacing: 24) {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(spacing: 8) {
-                        Text(transportMode == .direct ? "Connect to a Qu mixer" : "Connect to Qu-Control-Mac relay")
+                        Text(transportMode == .direct ? "Connect to a Qu mixer" : "Connect to Qu Controller Mac relay")
                             .font(.title2.weight(.semibold))
 
                         Button {
@@ -170,22 +168,39 @@ struct ContentView: View {
                     ) {
                         if (chromeModel.connectionState.phase == .disconnected || chromeModel.connectionState.phase == .error)
                             && chromeModel.canConnect {
-                            viewModel.toggleConnection()
+                            viewModel.toggleConnection(relayPortOverride: resolvedRelayPortOverride)
                         }
                     }
                     .frame(height: 36)
 
-                    Text("Port \(viewModel.currentPort)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if transportMode == .relay {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Relay port")
+                                .font(.headline)
+
+                            DigitOnlyTextField(
+                                placeholder: String(MixerTransportMode.relay.defaultEndpoint.port),
+                                text: relayPortBinding
+                            )
+                            .frame(height: 36)
+
+                            Text("Default port: 51326")
+                                .font(.caption)
+                                .foregroundStyle(Color.secondary)
+                        }
+                    } else {
+                        Text("Port \(viewModel.currentPort)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 
                     HStack(spacing: 12) {
                         Button(chromeModel.buttonTitle) {
-                            viewModel.toggleConnection()
+                            viewModel.toggleConnection(relayPortOverride: resolvedRelayPortOverride)
                         }
                         .buttonStyle(.borderedProminent)
                         .frame(maxWidth: .infinity)
-                        .disabled(chromeModel.isPrimaryActionDisabled)
+                        .disabled(isPrimaryActionDisabled)
 
                         if chromeModel.supportsAutoDiscovery || chromeModel.isScanningForMixer {
                             Button(viewModel.scanButtonTitle) {
@@ -225,37 +240,105 @@ struct ContentView: View {
             }
         )
     }
+
+    private var relayPortBinding: Binding<String> {
+        Binding(
+            get: { relayPortText },
+            set: { newValue in
+                let sanitizedValue = newValue.filter(\.isWholeNumber)
+                relayPortText = sanitizedValue
+
+                if let port = Int(sanitizedValue), Self.isValidPort(port) {
+                    viewModel.setRelayPort(port)
+                }
+            }
+        )
+    }
+
+    private var isPrimaryActionDisabled: Bool {
+        if transportMode == .relay && !isRelayPortValid {
+            return true
+        }
+
+        return chromeModel.isPrimaryActionDisabled
+    }
+
+    private var isRelayPortValid: Bool {
+        if relayPortText.isEmpty {
+            return true
+        }
+
+        guard let port = Int(relayPortText) else {
+            return false
+        }
+
+        return Self.isValidPort(port)
+    }
+
+    private var resolvedRelayPortOverride: Int? {
+        guard transportMode == .relay else {
+            return nil
+        }
+
+        if relayPortText.isEmpty {
+            return MixerTransportMode.relay.defaultEndpoint.port
+        }
+
+        return Int(relayPortText)
+    }
+
+    private static func isValidPort(_ port: Int) -> Bool {
+        (1 ... 65_535).contains(port)
+    }
 }
 
 private struct ConnectionHelpSheet: View {
+    let transportMode: MixerTransportMode
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Connect to a Qu mixer")
+                        Text(transportMode == .direct ? "Connect to a Qu mixer" : "Connect to Qu Controller Mac relay")
                             .font(.title3.weight(.semibold))
 
-                        Text("Enter the mixer IP address directly or scan the local network to find it.")
+                        Text(
+                            transportMode == .direct
+                                ? "Enter the mixer IP address directly or scan the local network to find it."
+                                : "Enter the Mac's LAN IP address and the relay port configured in Qu Controller Mac Settings."
+                        )
                             .foregroundStyle(.secondary)
                     }
 
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Where to find the mixer IP address")
+                        Text(transportMode == .direct ? "Where to find the mixer IP address" : "What to enter for relay mode")
                             .font(.headline)
 
-                        Text("On the mixer, press the physical **Setup** button, then on the touchscreen tap **Utility** > **Diagnostics**. Locate the current IP address.")
-                            .foregroundStyle(.secondary)
+                        if transportMode == .direct {
+                            Text("On the mixer, press the physical **Setup** button, then on the touchscreen tap **Utility** > **Diagnostics**. Locate the current IP address.")
+                                .foregroundStyle(.secondary)
 
-                        Text(.init("To set up the IP address, press the **Setup** button, then tap **Control** > **Network**. See page 68 of the [Qu Mixer Reference Guide](https://www.allen-heath.com/content/uploads/2023/06/Qu-Mixer-Reference-Guide-AP9372_10.pdf) for more detail."))
-                            .foregroundStyle(.secondary)
+                            Text(.init("To set up the IP address, press the **Setup** button, then tap **Control** > **Network**. See page 68 of the [Qu Mixer Reference Guide](https://www.allen-heath.com/content/uploads/2023/06/Qu-Mixer-Reference-Guide-AP9372_10.pdf) for more detail."))
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("Use the IP address of the Mac running Qu Controller Mac, not the mixer IP address.")
+                                .foregroundStyle(.secondary)
+
+                            Text("Use the relay port shown in Qu Controller Mac Settings. The default relay port is 51326.")
+                                .foregroundStyle(.secondary)
+                        }
                     }
 
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Tip")
                             .font(.headline)
 
-                        Text("If you do not know the address, use Find Mixer to scan the local network automatically.")
+                        Text(
+                            transportMode == .direct
+                                ? "If you do not know the address, use Find Mixer to scan the local network automatically."
+                                : "Relay mode does not support mixer discovery. Make sure the Mac relay is enabled and reachable on the local network."
+                        )
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -306,7 +389,7 @@ private struct IPv4AddressTextField: UIViewRepresentable {
             self.onSubmit = onSubmit
         }
 
-        func textField(_ textField: UITextField, shouldChangeCharactersIn range: NSRange, replacementString replacementString: String) -> Bool {
+        func textField(_ textField: UITextField, shouldChangeCharactersIn range: NSRange, replacementString: String) -> Bool {
             let currentText = textField.text ?? ""
             guard let stringRange = Range(range, in: currentText) else {
                 return false
@@ -319,6 +402,48 @@ private struct IPv4AddressTextField: UIViewRepresentable {
         func textFieldShouldReturn(_ textField: UITextField) -> Bool {
             onSubmit()
             return true
+        }
+
+        @objc func textDidChange(_ textField: UITextField) {
+            text = textField.text ?? ""
+        }
+    }
+}
+
+private struct DigitOnlyTextField: UIViewRepresentable {
+    let placeholder: String
+    @Binding var text: String
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text)
+    }
+
+    func makeUIView(context: Context) -> UITextField {
+        let textField = UITextField(frame: .zero)
+        textField.borderStyle = .roundedRect
+        textField.keyboardType = .numberPad
+        textField.clearButtonMode = .whileEditing
+        textField.delegate = context.coordinator
+        textField.addTarget(context.coordinator, action: #selector(Coordinator.textDidChange(_:)), for: .editingChanged)
+        return textField
+    }
+
+    func updateUIView(_ textField: UITextField, context: Context) {
+        textField.placeholder = placeholder
+        if textField.text != text {
+            textField.text = text
+        }
+    }
+
+    final class Coordinator: NSObject, UITextFieldDelegate {
+        @Binding private var text: String
+
+        init(text: Binding<String>) {
+            _text = text
+        }
+
+        func textField(_ textField: UITextField, shouldChangeCharactersIn range: NSRange, replacementString: String) -> Bool {
+            replacementString.allSatisfy(\.isWholeNumber) || replacementString.isEmpty
         }
 
         @objc func textDidChange(_ textField: UITextField) {
@@ -706,16 +831,17 @@ private struct StatusBadge: View {
     }
 }
 
-#Preview {
-    ContentView(
-        viewModel: MixerScreenViewModel(
-            controllerMode: .mock,
+struct ContentView_Previews: PreviewProvider {
+    static var previews: some View {
+        ContentView(
+            viewModel: MixerScreenViewModel(
+                controllerMode: .mock,
+                transportMode: .direct,
+                controller: MockMixerController()
+            ),
+            isUsingMockConnection: true,
             transportMode: .direct,
-            controller: MockMixerController()
-        ),
-        isUsingMockConnection: true,
-        transportMode: .direct,
-        onSetUseMockConnection: { _ in },
-        onSetTransportMode: { _ in }
-    )
+            onApplyConnectionMode: { _ in }
+        )
+    }
 }

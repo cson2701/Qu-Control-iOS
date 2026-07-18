@@ -34,34 +34,28 @@ struct Qu_ControllerApp: App {
                 viewModel: viewModel,
                 isUsingMockConnection: isUsingMockConnection,
                 transportMode: transportMode,
-                onSetUseMockConnection: updateMockConnectionUsage(_:),
-                onSetTransportMode: updateTransportMode(_:)
+                onApplyConnectionMode: applyConnectionMode(_:)
             )
             .id("\(transportMode.rawValue)-\(isUsingMockConnection)")
         }
     }
 
     @MainActor
-    private func updateMockConnectionUsage(_ usesMockConnection: Bool) {
-        guard usesMockConnection != isUsingMockConnection else {
+    private func applyConnectionMode(_ mode: ConnectionModeOption) {
+        let nextState = resolvedState(for: mode)
+        guard nextState.transportMode != transportMode || nextState.isUsingMockConnection != isUsingMockConnection else {
             return
         }
 
-        isUsingMockConnection = usesMockConnection
-        let nextMode = controllerMode(for: transportMode, usesMockConnection: usesMockConnection)
+        transportMode = nextState.transportMode
+        isUsingMockConnection = nextState.isUsingMockConnection
+        let nextMode = controllerMode(
+            for: nextState.transportMode,
+            usesMockConnection: nextState.isUsingMockConnection
+        )
+        MixerControllerFactory.setTransportMode(nextState.transportMode)
         MixerControllerFactory.setDebugControllerMode(nextMode)
-        rebuildViewModel(startInitialConnectionFlow: !usesMockConnection)
-    }
-
-    @MainActor
-    private func updateTransportMode(_ transportMode: MixerTransportMode) {
-        guard transportMode != self.transportMode else {
-            return
-        }
-
-        self.transportMode = transportMode
-        MixerControllerFactory.setTransportMode(transportMode)
-        rebuildViewModel(startInitialConnectionFlow: !isUsingMockConnection)
+        rebuildViewModel(startInitialConnectionFlow: !nextState.isUsingMockConnection)
     }
 
     @MainActor
@@ -89,6 +83,17 @@ struct Qu_ControllerApp: App {
             .direct
         case .relay:
             .relay
+        }
+    }
+
+    private func resolvedState(for mode: ConnectionModeOption) -> (transportMode: MixerTransportMode, isUsingMockConnection: Bool) {
+        switch mode {
+        case .mixer:
+            (transportMode: .direct, isUsingMockConnection: false)
+        case .relay:
+            (transportMode: .relay, isUsingMockConnection: false)
+        case .demo:
+            (transportMode: transportMode, isUsingMockConnection: true)
         }
     }
 }

@@ -1,64 +1,81 @@
 import SwiftUI
 
+enum ConnectionModeOption: String, CaseIterable, Equatable, Identifiable {
+    case mixer
+    case relay
+    case demo
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .mixer:
+            "Mixer"
+        case .relay:
+            "Relay"
+        case .demo:
+            "Demo"
+        }
+    }
+
+    init(isUsingMockConnection: Bool, transportMode: MixerTransportMode) {
+        if isUsingMockConnection {
+            self = .demo
+        } else {
+            self = switch transportMode {
+            case .direct:
+                .mixer
+            case .relay:
+                .relay
+            }
+        }
+    }
+}
+
 struct SettingsView: View {
     @ObservedObject var viewModel: MixerScreenViewModel
     let isUsingMockConnection: Bool
     let transportMode: MixerTransportMode
-    let onSetUseMockConnection: (Bool) -> Void
-    let onSetTransportMode: (MixerTransportMode) -> Void
+    let onApplyConnectionMode: (ConnectionModeOption) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @State private var draftConnectionMode: ConnectionModeOption
+    @State private var hasAppliedDraftConnectionMode = false
+
+    init(
+        viewModel: MixerScreenViewModel,
+        isUsingMockConnection: Bool,
+        transportMode: MixerTransportMode,
+        onApplyConnectionMode: @escaping (ConnectionModeOption) -> Void
+    ) {
+        self.viewModel = viewModel
+        self.isUsingMockConnection = isUsingMockConnection
+        self.transportMode = transportMode
+        self.onApplyConnectionMode = onApplyConnectionMode
+        _draftConnectionMode = State(
+            initialValue: ConnectionModeOption(
+                isUsingMockConnection: isUsingMockConnection,
+                transportMode: transportMode
+            )
+        )
+    }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Transport") {
+                Section {
                     Picker(
-                        "Connection type",
-                        selection: Binding(
-                            get: { transportMode },
-                            set: onSetTransportMode
-                        )
+                        "Connection mode",
+                        selection: $draftConnectionMode
                     ) {
-                        ForEach(MixerTransportMode.allCases, id: \.self) { mode in
+                        ForEach(ConnectionModeOption.allCases) { mode in
                             Text(mode.title).tag(mode)
                         }
                     }
-                    .pickerStyle(.segmented)
-
-                    if transportMode == .relay {
-                        Text("Relay mode connects to Qu-Control-Mac instead of opening a direct mixer TCP socket.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                if transportMode == .relay {
-                    Section("Relay Connection") {
-                        TextField(
-                            "Relay IP address",
-                            text: Binding(
-                                get: { viewModel.host },
-                                set: viewModel.updateHost(_:)
-                            )
-                        )
-                        .keyboardType(.numbersAndPunctuation)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-
-                        TextField(
-                            "Port",
-                            value: Binding(
-                                get: { viewModel.relayPort },
-                                set: viewModel.setRelayPort(_:)
-                            ),
-                            format: .number.grouping(.never)
-                        )
-                        .keyboardType(.numberPad)
-
-                        Text("The default relay port is 51326.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    .pickerStyle(.menu)
+                } footer: {
+                    if draftConnectionMode == .relay {
+                        Text("Relay mode connects to Qu Controller Mac instead of opening a direct mixer TCP socket.")
                     }
                 }
 
@@ -71,23 +88,23 @@ struct SettingsView: View {
                         )
                     )
 
-                    Toggle(
-                        "Scan for mixer on launch",
-                        isOn: Binding(
-                            get: { viewModel.autoScanOnLaunch },
-                            set: viewModel.setAutoScanOnLaunch(_:)
+                    if draftConnectionMode == .mixer {
+                        Toggle(
+                            "Scan for mixer on launch",
+                            isOn: Binding(
+                                get: { viewModel.autoScanOnLaunch },
+                                set: viewModel.setAutoScanOnLaunch(_:)
+                            )
                         )
-                    )
-                    .disabled(transportMode != .direct)
 
-                    Toggle(
-                        "Automatically connect after discovery",
-                        isOn: Binding(
-                            get: { viewModel.autoConnectAfterDiscovery },
-                            set: viewModel.setAutoConnectAfterDiscovery(_:)
+                        Toggle(
+                            "Automatically connect after discovery",
+                            isOn: Binding(
+                                get: { viewModel.autoConnectAfterDiscovery },
+                                set: viewModel.setAutoConnectAfterDiscovery(_:)
+                            )
                         )
-                    )
-                    .disabled(transportMode != .direct)
+                    }
                     
                     Toggle(
                         "Confirm before shutting down",
@@ -114,25 +131,16 @@ struct SettingsView: View {
                     }
                 }
 
-#if DEBUG
-                if viewModel.connectionState.phase != .connected {
-                    Section {
-                        Toggle(
-                            "Demo Mode",
-                            isOn: Binding(
-                                get: { isUsingMockConnection },
-                                set: onSetUseMockConnection
-                            )
-                        )
-                    }
-                }
-#endif
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
+            .onDisappear {
+                applyDraftConnectionModeIfNeeded()
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
+                        applyDraftConnectionModeIfNeeded()
                         dismiss()
                     } label: {
                         Image(systemName: "xmark")
@@ -140,5 +148,14 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    private func applyDraftConnectionModeIfNeeded() {
+        guard !hasAppliedDraftConnectionMode else {
+            return
+        }
+
+        hasAppliedDraftConnectionMode = true
+        onApplyConnectionMode(draftConnectionMode)
     }
 }
