@@ -39,7 +39,9 @@ final class MixerShutdownShortcutService {
         using controller: MixerController
     ) async throws -> Result {
         let endpoint = MixerEndpoint(host: host)
-        await controller.connect(to: endpoint)
+        if !isConnected(controller, to: endpoint) {
+            await controller.connect(to: endpoint)
+        }
 
         let connectedState = try await waitForConnectionOutcome(for: controller, endpoint: endpoint)
         guard connectedState.phase == .connected else {
@@ -99,6 +101,11 @@ final class MixerShutdownShortcutService {
         case .connecting, .disconnected:
             return nil
         }
+    }
+
+    private func isConnected(_ controller: MixerController, to endpoint: MixerEndpoint) -> Bool {
+        let connectionState = controller.connectionState
+        return connectionState.phase == .connected && connectionState.endpoint == endpoint
     }
 
     private func lastSuccessfulHost() -> String? {

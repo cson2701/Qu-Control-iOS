@@ -16,12 +16,15 @@ enum MixerControllerFactory {
     }
 
     @MainActor
+    private static let sharedNetworkController = QuNetworkMixerController()
+
+    @MainActor
     static func makeMixerController(mode: ControllerMode) -> MixerController {
         switch mode {
         case .mock:
             return MockMixerController()
         case .network:
-            return QuNetworkMixerController()
+            return sharedNetworkController
         }
     }
 
