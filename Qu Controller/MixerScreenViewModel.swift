@@ -222,7 +222,7 @@ final class MixerScreenViewModel: ObservableObject {
         isScanningForMixer ? "Stop Scan" : "Find Mixer"
     }
 
-    func toggleConnection() {
+    func toggleConnection(relayPortOverride: Int? = nil) {
         switch connectionState.phase {
         case .connected, .connecting:
             controller.disconnect()
@@ -230,8 +230,14 @@ final class MixerScreenViewModel: ObservableObject {
             let connectionHost = host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? rememberedHost ?? host
                 : host
+            let port: Int
+            if transportMode == .relay, let relayPortOverride {
+                port = relayPortOverride
+            } else {
+                port = currentPort
+            }
             Task {
-                await controller.connect(to: MixerEndpoint(host: connectionHost, port: currentPort))
+                await controller.connect(to: MixerEndpoint(host: connectionHost, port: port))
             }
         }
     }

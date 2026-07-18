@@ -240,14 +240,16 @@ final class QuRelayMixerController: MixerController {
         from snapshot: MixerRelayConnectionSnapshot,
         endpoint: MixerEndpoint
     ) -> String {
+        let snapshotMessage = snapshot.message
         let remoteEndpointSuffix: String
-        if let remoteEndpoint = snapshot.endpoint {
+        if let remoteEndpoint = snapshot.endpoint,
+           !snapshotMessage.contains("\(remoteEndpoint.host):\(remoteEndpoint.port)") {
             remoteEndpointSuffix = " Mixer endpoint: \(remoteEndpoint.host):\(remoteEndpoint.port)."
         } else {
             remoteEndpointSuffix = ""
         }
 
-        return "Relay \(endpoint.host):\(endpoint.port). \(snapshot.message)\(remoteEndpointSuffix)"
+        return "Relay \(endpoint.host):\(endpoint.port). \(snapshotMessage)\(remoteEndpointSuffix)"
     }
 
     private func send(_ command: MixerRelayClientCommand) async throws {
