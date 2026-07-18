@@ -12,7 +12,9 @@ import UIKit
 struct ContentView: View {
     let viewModel: MixerScreenViewModel
     let isUsingMockConnection: Bool
+    let transportMode: MixerTransportMode
     let onSetUseMockConnection: (Bool) -> Void
+    let onSetTransportMode: (MixerTransportMode) -> Void
 
     @StateObject private var chromeModel: ContentChromeModel
     @State private var isShowingSettings = false
@@ -23,11 +25,15 @@ struct ContentView: View {
     init(
         viewModel: MixerScreenViewModel,
         isUsingMockConnection: Bool,
-        onSetUseMockConnection: @escaping (Bool) -> Void
+        transportMode: MixerTransportMode,
+        onSetUseMockConnection: @escaping (Bool) -> Void,
+        onSetTransportMode: @escaping (MixerTransportMode) -> Void
     ) {
         self.viewModel = viewModel
         self.isUsingMockConnection = isUsingMockConnection
+        self.transportMode = transportMode
         self.onSetUseMockConnection = onSetUseMockConnection
+        self.onSetTransportMode = onSetTransportMode
         _chromeModel = StateObject(wrappedValue: ContentChromeModel(viewModel: viewModel))
     }
 
@@ -65,7 +71,9 @@ struct ContentView: View {
             SettingsView(
                 viewModel: viewModel,
                 isUsingMockConnection: isUsingMockConnection,
-                onSetUseMockConnection: onSetUseMockConnection
+                transportMode: transportMode,
+                onSetUseMockConnection: onSetUseMockConnection,
+                onSetTransportMode: onSetTransportMode
             )
         }
         .confirmationDialog(
@@ -138,7 +146,7 @@ struct ContentView: View {
             VStack(spacing: 24) {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(spacing: 8) {
-                        Text("Connect to a Qu mixer")
+                        Text(transportMode == .direct ? "Connect to a Qu mixer" : "Connect to Qu-Control-Mac relay")
                             .font(.title2.weight(.semibold))
 
                         Button {
@@ -153,7 +161,7 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Mixer IP address")
+                    Text(transportMode == .direct ? "Mixer IP address" : "Relay IP address")
                         .font(.headline)
 
                     IPv4AddressTextField(
@@ -167,7 +175,7 @@ struct ContentView: View {
                     }
                     .frame(height: 36)
 
-                    Text("Port 51325")
+                    Text("Port \(viewModel.currentPort)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 
@@ -179,16 +187,18 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity)
                         .disabled(chromeModel.isPrimaryActionDisabled)
 
-                        Button(viewModel.scanButtonTitle) {
-                            if chromeModel.isScanningForMixer {
-                                viewModel.stopScanningForMixer()
-                            } else {
-                                viewModel.scanForMixer()
+                        if chromeModel.supportsAutoDiscovery || chromeModel.isScanningForMixer {
+                            Button(viewModel.scanButtonTitle) {
+                                if chromeModel.isScanningForMixer {
+                                    viewModel.stopScanningForMixer()
+                                } else {
+                                    viewModel.scanForMixer()
+                                }
                             }
+                            .buttonStyle(.bordered)
+                            .frame(maxWidth: .infinity)
+                            .disabled(!chromeModel.isScanningForMixer && !chromeModel.isAutoScanAvailable)
                         }
-                        .buttonStyle(.bordered)
-                        .frame(maxWidth: .infinity)
-                        .disabled(!chromeModel.isScanningForMixer && !chromeModel.isAutoScanAvailable)
                     }
                 }
 
@@ -327,7 +337,7 @@ private final class ContentChromeModel: ObservableObject {
     @Published private(set) var rememberedHost: String?
     @Published private(set) var hostPlaceholder: String
 
-    private let supportsAutoDiscovery: Bool
+    let supportsAutoDiscovery: Bool
     private var cancellables = Set<AnyCancellable>()
 
     init(viewModel: MixerScreenViewModel) {
@@ -698,8 +708,14 @@ private struct StatusBadge: View {
 
 #Preview {
     ContentView(
-        viewModel: MixerScreenViewModel(controller: MockMixerController()),
+        viewModel: MixerScreenViewModel(
+            controllerMode: .mock,
+            transportMode: .direct,
+            controller: MockMixerController()
+        ),
         isUsingMockConnection: true,
-        onSetUseMockConnection: { _ in }
+        transportMode: .direct,
+        onSetUseMockConnection: { _ in },
+        onSetTransportMode: { _ in }
     )
 }
