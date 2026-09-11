@@ -17,6 +17,7 @@ final class QuNetworkMixerController: MixerController {
         message: "Disconnected",
         endpoint: nil
     )
+    @Published private var storedFaderWaveState = FaderWaveState.disconnected
 
     var channels: [MixerChannelState] {
         storedChannels
@@ -26,12 +27,20 @@ final class QuNetworkMixerController: MixerController {
         storedConnectionState
     }
 
+    var faderWaveState: FaderWaveState {
+        storedFaderWaveState
+    }
+
     var channelsPublisher: AnyPublisher<[MixerChannelState], Never> {
         $storedChannels.eraseToAnyPublisher()
     }
 
     var connectionStatePublisher: AnyPublisher<MixerConnectionState, Never> {
         $storedConnectionState.eraseToAnyPublisher()
+    }
+
+    var faderWaveStatePublisher: AnyPublisher<FaderWaveState, Never> {
+        $storedFaderWaveState.eraseToAnyPublisher()
     }
 
     private let connectionQueue = DispatchQueue(label: "com.scrapps.qucontroller.network")
@@ -48,6 +57,8 @@ final class QuNetworkMixerController: MixerController {
     private var isIntentionalDisconnect = false
     private var isSignalMonitoringEnabled = false
     private var pendingSignalStates: [MixerChannelID: Bool] = [:]
+    private var mainLRGEQValues: [UInt8: UInt8] = [:]
+    private var faderWaveTask: Task<Void, Never>?
 
     func connect(to endpoint: MixerEndpoint) async {
         await disconnectTransport(updateState: false, intentional: false)
@@ -58,6 +69,7 @@ final class QuNetworkMixerController: MixerController {
             message: "Connecting to \(endpoint.host):\(endpoint.port)",
             endpoint: endpoint
         )
+        storedFaderWaveState = .receivingGEQState(receivedBandCount: 0)
         startConnectionTimeout(for: endpoint)
 
         do {
@@ -86,6 +98,8 @@ final class QuNetworkMixerController: MixerController {
             )
             return
         }
+
+        await stopFaderWaveAndWaitForRestoration()
 
         do {
             try await sendRemoteShutdown(midiChannel: midiChannel)
@@ -199,6 +213,27 @@ final class QuNetworkMixerController: MixerController {
                 }
             }
         }
+    }
+
+    func startFaderWave(configuration: FaderWaveConfiguration) {
+        guard connectionState.phase == .connected,
+              let midiChannel,
+              faderWaveTask == nil,
+              let originalValues = mainLRGEQSnapshot else { return }
+
+        storedFaderWaveState = .running(progress: 0)
+        faderWaveTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.runFaderWave(
+                originalValues: originalValues,
+                midiChannel: midiChannel,
+                configuration: configuration
+            )
+        }
+    }
+
+    func stopFaderWave() {
+        faderWaveTask?.cancel()
     }
 
     private func makeConnection(for endpoint: MixerEndpoint) async throws -> NWConnection {
@@ -374,6 +409,112 @@ final class QuNetworkMixerController: MixerController {
         ])
     }
 
+    private var mainLRGEQSnapshot: [UInt8]? {
+        let values = (0 ..< FaderWaveAnimation.bandCount).compactMap { bandIndex in
+            mainLRGEQValues[UInt8(bandIndex)]
+        }
+        return values.count == FaderWaveAnimation.bandCount ? values : nil
+    }
+
+    private func runFaderWave(
+        originalValues: [UInt8],
+        midiChannel: UInt8,
+        configuration: FaderWaveConfiguration
+    ) async {
+        var animationError: Error?
+        let frameCount = FaderWaveAnimation.frameCount(for: configuration)
+
+        do {
+            for frame in 0 ... frameCount {
+                try Task.checkCancellation()
+                let progress = Double(frame) / Double(frameCount)
+
+                for bandIndex in 0 ..< FaderWaveAnimation.bandCount {
+                    try Task.checkCancellation()
+                    try await sendNRPN(
+                        midiChannel: midiChannel,
+                        targetChannel: MixerChannelID.mainLr.midiChannelCode,
+                        parameterID: 0x70,
+                        value: FaderWaveAnimation.value(
+                            originalValue: originalValues[bandIndex],
+                            bandIndex: bandIndex,
+                            progress: progress,
+                            configuration: configuration
+                        ),
+                        index: UInt8(bandIndex)
+                    )
+                }
+
+                storedFaderWaveState = .running(progress: progress)
+                if frame < frameCount {
+                    try await Task.sleep(for: FaderWaveAnimation.frameInterval)
+                }
+            }
+        } catch is CancellationError {
+            // Cancellation still falls through to exact-value restoration.
+        } catch {
+            animationError = error
+        }
+
+        storedFaderWaveState = .restoring
+        let restorationError = await restoreMainLRGEQ(originalValues, midiChannel: midiChannel)
+        faderWaveTask = nil
+
+        if let error = restorationError ?? animationError {
+            storedFaderWaveState = .failed("Fader Wave failed: \(error.localizedDescription)")
+            await handleConnectionFailure(
+                error,
+                endpoint: storedConnectionState.endpoint,
+                prefix: "Fader Wave failed"
+            )
+            return
+        }
+
+        updateFaderWaveReadiness()
+    }
+
+    private func restoreMainLRGEQ(_ values: [UInt8], midiChannel: UInt8) async -> Error? {
+        var firstError: Error?
+
+        for (bandIndex, value) in values.enumerated() {
+            do {
+                try await sendNRPN(
+                    midiChannel: midiChannel,
+                    targetChannel: MixerChannelID.mainLr.midiChannelCode,
+                    parameterID: 0x70,
+                    value: value,
+                    index: UInt8(bandIndex)
+                )
+                mainLRGEQValues[UInt8(bandIndex)] = value
+            } catch {
+                if firstError == nil { firstError = error }
+            }
+        }
+
+        return firstError
+    }
+
+    private func stopFaderWaveAndWaitForRestoration() async {
+        guard let faderWaveTask else { return }
+        faderWaveTask.cancel()
+        await faderWaveTask.value
+    }
+
+    private func updateFaderWaveReadiness() {
+        guard faderWaveTask == nil else { return }
+
+        guard connectionState.phase == .connected else {
+            storedFaderWaveState = .disconnected
+            return
+        }
+
+        if mainLRGEQSnapshot != nil {
+            storedFaderWaveState = .ready
+        } else {
+            storedFaderWaveState = .receivingGEQState(receivedBandCount: mainLRGEQValues.count)
+        }
+    }
+
     private func sendMute(midiChannel: UInt8, targetChannel: UInt8, isMuted: Bool) async throws {
         let status = 0x90 | midiChannel
         try await sendBytes([
@@ -461,6 +602,7 @@ final class QuNetworkMixerController: MixerController {
                 message: "Connected to \(endpoint.host):\(endpoint.port) on MIDI channel \(Int(receivedMIDIChannel) + 1)",
                 endpoint: endpoint
             )
+            updateFaderWaveReadiness()
 
             Task {
                 try? await requestChannelNames()
@@ -511,12 +653,21 @@ final class QuNetworkMixerController: MixerController {
         case 0x06:
             nrpnState.dataMSB = value
         case 0x26:
-            if let targetChannel = nrpnState.channel,
-               let channelID = MixerChannelID(midiChannelCode: targetChannel),
-               nrpnState.parameterID == 0x17,
-               value == 0x07,
-               let dataMSB = nrpnState.dataMSB
-            {
+            guard let targetChannel = nrpnState.channel,
+                  let parameterID = nrpnState.parameterID,
+                  let dataMSB = nrpnState.dataMSB else {
+                nrpnState.clear()
+                return
+            }
+
+            if targetChannel == MixerChannelID.mainLr.midiChannelCode,
+               parameterID == 0x70,
+               value < FaderWaveAnimation.bandCount {
+                mainLRGEQValues[value] = dataMSB
+                updateFaderWaveReadiness()
+            } else if let channelID = MixerChannelID(midiChannelCode: targetChannel),
+                      parameterID == 0x17,
+                      value == 0x07 {
                 let level = FaderLevel(normalized: Double(dataMSB) / 127)
                 storedChannels = storedChannels.map { channel in
                     guard channel.id == channelID else {
@@ -658,6 +809,7 @@ final class QuNetworkMixerController: MixerController {
 
     private func disconnectTransport(updateState: Bool, intentional: Bool) async {
         isIntentionalDisconnect = intentional
+        await stopFaderWaveAndWaitForRestoration()
         activeSenseTask?.cancel()
         activeSenseTask = nil
         connectionTimeoutTask?.cancel()
@@ -671,6 +823,8 @@ final class QuNetworkMixerController: MixerController {
         mixerModel = nil
         byteBuffer.removeAll(keepingCapacity: false)
         nrpnState.clear()
+        mainLRGEQValues.removeAll(keepingCapacity: false)
+        storedFaderWaveState = .disconnected
         pendingSignalStates.removeAll(keepingCapacity: false)
         storedChannels = storedChannels.map { channel in
             MixerChannelState(

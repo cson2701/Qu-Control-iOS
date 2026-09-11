@@ -6,6 +6,8 @@ struct MixerRelayClientCommand: Encodable {
     let level: Double?
     let isMuted: Bool?
     let isEnabled: Bool?
+    let cycles: Double?
+    let speed: Double?
 
     static func setLevel(channel: MixerChannelID, level: Double) -> MixerRelayClientCommand {
         MixerRelayClientCommand(
@@ -13,7 +15,9 @@ struct MixerRelayClientCommand: Encodable {
             channel: channel,
             level: level,
             isMuted: nil,
-            isEnabled: nil
+            isEnabled: nil,
+            cycles: nil,
+            speed: nil
         )
     }
 
@@ -23,7 +27,9 @@ struct MixerRelayClientCommand: Encodable {
             channel: channel,
             level: nil,
             isMuted: isMuted,
-            isEnabled: nil
+            isEnabled: nil,
+            cycles: nil,
+            speed: nil
         )
     }
 
@@ -33,7 +39,9 @@ struct MixerRelayClientCommand: Encodable {
             channel: nil,
             level: nil,
             isMuted: nil,
-            isEnabled: nil
+            isEnabled: nil,
+            cycles: nil,
+            speed: nil
         )
     }
 
@@ -43,7 +51,33 @@ struct MixerRelayClientCommand: Encodable {
             channel: nil,
             level: nil,
             isMuted: nil,
-            isEnabled: isEnabled
+            isEnabled: isEnabled,
+            cycles: nil,
+            speed: nil
+        )
+    }
+
+    static func startFaderWave(configuration: FaderWaveConfiguration) -> MixerRelayClientCommand {
+        MixerRelayClientCommand(
+            type: "startFaderWave",
+            channel: nil,
+            level: nil,
+            isMuted: nil,
+            isEnabled: nil,
+            cycles: configuration.cycles,
+            speed: configuration.speed
+        )
+    }
+
+    static func stopFaderWave() -> MixerRelayClientCommand {
+        MixerRelayClientCommand(
+            type: "stopFaderWave",
+            channel: nil,
+            level: nil,
+            isMuted: nil,
+            isEnabled: nil,
+            cycles: nil,
+            speed: nil
         )
     }
 }
@@ -52,6 +86,7 @@ struct MixerRelayServerMessage: Decodable {
     let type: String
     let connection: MixerRelayConnectionSnapshot?
     let channels: [MixerRelayChannelSnapshot]?
+    let faderWave: FaderWaveState?
     let message: String?
 }
 

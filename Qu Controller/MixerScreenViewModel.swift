@@ -18,6 +18,8 @@ final class MixerScreenViewModel: ObservableObject {
     @Published var host: String
     @Published private(set) var channels: [MixerChannelState]
     @Published private(set) var connectionState: MixerConnectionState
+    @Published private(set) var faderWaveState: FaderWaveState
+    @Published private(set) var faderWaveConfiguration: FaderWaveConfiguration
     @Published private(set) var layoutPreferences: MixerLayoutPreferences
     @Published private(set) var discoveryState: DiscoveryState = .idle
     @Published private(set) var confirmBeforeShutdown: Bool
@@ -53,6 +55,8 @@ final class MixerScreenViewModel: ObservableObject {
         host = rememberedEndpoint.host
         channels = controller.channels
         connectionState = controller.connectionState
+        faderWaveState = controller.faderWaveState
+        faderWaveConfiguration = AppSettings.loadFaderWaveConfiguration(from: userDefaults)
         layoutPreferences = Self.loadLayoutPreferences(from: userDefaults)
         confirmBeforeShutdown = Self.loadConfirmBeforeShutdown(from: userDefaults)
         autoConnectAfterDiscovery = Self.loadAutoConnectAfterDiscovery(from: userDefaults)
@@ -68,6 +72,10 @@ final class MixerScreenViewModel: ObservableObject {
         controller.connectionStatePublisher
             .receive(on: DispatchQueue.main)
             .assign(to: &$connectionState)
+
+        controller.faderWaveStatePublisher
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$faderWaveState)
 
         controller.connectionStatePublisher
             .receive(on: DispatchQueue.main)
@@ -187,6 +195,34 @@ final class MixerScreenViewModel: ObservableObject {
         connectionState.phase == .connected
     }
 
+    var isFaderWaveAvailable: Bool {
+        faderWaveState.phase == .ready
+    }
+
+    var isFaderWaveActive: Bool {
+        faderWaveState.isActive
+    }
+
+    var faderWaveCyclesLabel: String {
+        faderWaveConfiguration.cycles.formatted(.number.precision(.fractionLength(0 ... 1)))
+    }
+
+    var faderWaveSpeedLabel: String {
+        faderWaveConfiguration.speed.formatted(.number.precision(.fractionLength(0 ... 2))) + "×"
+    }
+
+    var faderWaveEstimatedDurationLabel: String {
+        let totalSeconds = Int(faderWaveConfiguration.estimatedDurationSeconds.rounded())
+        guard totalSeconds >= 60 else { return "\(totalSeconds) seconds" }
+        let minutes = totalSeconds / 60
+        let seconds = totalSeconds % 60
+        return seconds == 0 ? "\(minutes) min" : "\(minutes) min \(seconds) sec"
+    }
+
+    var hasDefaultFaderWaveConfiguration: Bool {
+        faderWaveConfiguration == .default
+    }
+
     var statusMessage: String {
         if usesMockConnection, connectionState.phase == .disconnected {
             return "Demo Mode is enabled. Connect to use the simulated mixer."
@@ -266,6 +302,30 @@ final class MixerScreenViewModel: ObservableObject {
         }
 
         controller.setMute(for: .mainLr, isMuted: !mainLRChannel.isMuted)
+    }
+
+    func startFaderWave() {
+        controller.startFaderWave(configuration: faderWaveConfiguration)
+    }
+
+    func stopFaderWave() {
+        controller.stopFaderWave()
+    }
+
+    func setFaderWaveCycles(_ cycles: Double) {
+        updateFaderWaveConfiguration(
+            FaderWaveConfiguration(cycles: cycles, speed: faderWaveConfiguration.speed)
+        )
+    }
+
+    func setFaderWaveSpeed(_ speed: Double) {
+        updateFaderWaveConfiguration(
+            FaderWaveConfiguration(cycles: faderWaveConfiguration.cycles, speed: speed)
+        )
+    }
+
+    func resetFaderWaveConfiguration() {
+        updateFaderWaveConfiguration(.default)
     }
 
     func isChannelVisible(_ channelID: MixerChannelID, on surface: MixerLayoutSurface) -> Bool {
@@ -363,6 +423,12 @@ final class MixerScreenViewModel: ObservableObject {
         }
 
         userDefaults.set(data, forKey: AppSettingsKey.layoutPreferences)
+    }
+
+    private func updateFaderWaveConfiguration(_ configuration: FaderWaveConfiguration) {
+        faderWaveConfiguration = configuration
+        userDefaults.set(configuration.cycles, forKey: AppSettingsKey.faderWaveCycles)
+        userDefaults.set(configuration.speed, forKey: AppSettingsKey.faderWaveSpeed)
     }
 
     private static func loadLayoutPreferences(from userDefaults: UserDefaults) -> MixerLayoutPreferences {
