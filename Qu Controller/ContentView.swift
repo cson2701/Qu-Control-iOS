@@ -10,7 +10,7 @@ import SwiftUI
 import UIKit
 
 struct ContentView: View {
-    let viewModel: MixerScreenViewModel
+    @ObservedObject var viewModel: MixerScreenViewModel
     let isUsingMockConnection: Bool
     let transportMode: MixerTransportMode
     let onApplyConnectionMode: (ConnectionModeOption) -> Void
@@ -21,6 +21,8 @@ struct ContentView: View {
     @State private var isShowingShutdownConfirmation = false
     @State private var isShowingStatusDetails = false
     @State private var isShowingConnectionHelp = false
+    @State private var isShowingFaderWaveControls = false
+    @State private var isShowingFaderWaveConfirmation = false
 
     init(
         viewModel: MixerScreenViewModel,
@@ -86,6 +88,33 @@ struct ContentView: View {
         } message: {
             Text("This powers off the connected Qu mixer and may require a hard power reset to turn it back on.")
         }
+        .confirmationDialog(
+            "Start Fader Wave?",
+            isPresented: $isShowingFaderWaveConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Start Fader Wave") {
+                viewModel.startFaderWave()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "Fader Wave temporarily changes the Main LR graphic EQ and can affect live audio. "
+                    + "Put the mixer in GEQ Fader Flip mode to see its motorized faders move. "
+                    + "The original GEQ values will be restored when the show finishes or is stopped."
+            )
+        }
+        .sheet(isPresented: $isShowingFaderWaveControls) {
+            FaderWaveControlsSheet(
+                viewModel: viewModel,
+                onStart: {
+                    isShowingFaderWaveControls = false
+                    isShowingFaderWaveConfirmation = true
+                }
+            )
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.visible)
+        }
         .sheet(isPresented: $isShowingStatusDetails) {
             StatusDetailsSheet(
                 title: chromeModel.statusSheetTitle,
@@ -113,6 +142,20 @@ struct ContentView: View {
 
     private var connectedOverflowMenu: some View {
         Menu {
+            if viewModel.isFaderWaveActive {
+                Button(role: .destructive) {
+                    viewModel.stopFaderWave()
+                } label: {
+                    Label("Stop Fader Wave", systemImage: "stop.circle")
+                }
+            } else {
+                Button {
+                    isShowingFaderWaveControls = true
+                } label: {
+                    Label("Fader Wave", systemImage: "waveform.path")
+                }
+            }
+
             Button {
                 isShowingSettings = true
             } label: {
@@ -692,6 +735,15 @@ private struct ConnectedMixerContent: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(Color(.systemGroupedBackground))
+            .safeAreaInset(edge: .top) {
+                if viewModel.faderWaveState.phase == .running
+                    || viewModel.faderWaveState.phase == .restoring
+                    || viewModel.faderWaveState.phase == .failed {
+                    FaderWaveStatusBanner(viewModel: viewModel)
+                        .padding(.horizontal, 20)
+                        .padding(.top, 8)
+                }
+            }
             .safeAreaInset(edge: .bottom) {
                 if !usesWideMixerLayout, let mainLRChannel {
                     HorizontalMixerChannelRow(
@@ -712,6 +764,118 @@ private struct ConnectedMixerContent: View {
                 }
             }
         }
+    }
+}
+
+private struct FaderWaveControlsSheet: View {
+    @ObservedObject var viewModel: MixerScreenViewModel
+    let onStart: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Stepper(
+                        value: Binding(
+                            get: { viewModel.faderWaveConfiguration.cycles },
+                            set: viewModel.setFaderWaveCycles(_:)
+                        ),
+                        in: FaderWaveConfiguration.cyclesRange,
+                        step: FaderWaveConfiguration.cyclesStep
+                    ) {
+                        LabeledContent("Cycles", value: viewModel.faderWaveCyclesLabel)
+                    }
+
+                    Stepper(
+                        value: Binding(
+                            get: { viewModel.faderWaveConfiguration.speed },
+                            set: viewModel.setFaderWaveSpeed(_:)
+                        ),
+                        in: FaderWaveConfiguration.speedRange,
+                        step: FaderWaveConfiguration.speedStep
+                    ) {
+                        LabeledContent("Speed", value: viewModel.faderWaveSpeedLabel)
+                    }
+
+                    LabeledContent("Estimated duration", value: viewModel.faderWaveEstimatedDurationLabel)
+                } header: {
+                    Text("Playback")
+                } footer: {
+                    Text("Moves the first 16 Main LR GEQ bands in a wave and restores their original positions.")
+                }
+
+                Section("Status") {
+                    Text(viewModel.faderWaveState.message)
+                        .foregroundStyle(.secondary)
+
+                    if viewModel.faderWaveState.phase == .running {
+                        ProgressView(value: viewModel.faderWaveState.progress)
+                    } else if viewModel.faderWaveState.phase == .restoring {
+                        ProgressView()
+                    }
+                }
+
+                Section {
+                    if viewModel.isFaderWaveActive {
+                        Button("Stop Fader Wave", role: .destructive) {
+                            viewModel.stopFaderWave()
+                        }
+                    } else {
+                        Button("Start Fader Wave") {
+                            onStart()
+                        }
+                        .disabled(!viewModel.isFaderWaveAvailable)
+                    }
+
+                    if !viewModel.hasDefaultFaderWaveConfiguration {
+                        Button("Reset Playback Defaults") {
+                            viewModel.resetFaderWaveConfiguration()
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Fader Wave")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+private struct FaderWaveStatusBanner: View {
+    @ObservedObject var viewModel: MixerScreenViewModel
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: viewModel.faderWaveState.phase == .failed ? "exclamationmark.triangle.fill" : "waveform.path")
+                .foregroundStyle(viewModel.faderWaveState.phase == .failed ? Color.red : Color.accentColor)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(viewModel.faderWaveState.message)
+                    .font(.subheadline.weight(.medium))
+
+                if viewModel.faderWaveState.phase == .running {
+                    ProgressView(value: viewModel.faderWaveState.progress)
+                } else if viewModel.faderWaveState.phase == .restoring {
+                    ProgressView()
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if viewModel.faderWaveState.phase == .running {
+                Button("Stop", role: .destructive) {
+                    viewModel.stopFaderWave()
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .padding(12)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
 

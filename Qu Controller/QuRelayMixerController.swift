@@ -10,6 +10,7 @@ final class QuRelayMixerController: MixerController {
         message: "Disconnected",
         endpoint: nil
     )
+    @Published private var storedFaderWaveState = FaderWaveState.disconnected
 
     var channels: [MixerChannelState] {
         storedChannels
@@ -19,12 +20,20 @@ final class QuRelayMixerController: MixerController {
         storedConnectionState
     }
 
+    var faderWaveState: FaderWaveState {
+        storedFaderWaveState
+    }
+
     var channelsPublisher: AnyPublisher<[MixerChannelState], Never> {
         $storedChannels.eraseToAnyPublisher()
     }
 
     var connectionStatePublisher: AnyPublisher<MixerConnectionState, Never> {
         $storedConnectionState.eraseToAnyPublisher()
+    }
+
+    var faderWaveStatePublisher: AnyPublisher<FaderWaveState, Never> {
+        $storedFaderWaveState.eraseToAnyPublisher()
     }
 
     private let connectionQueue = DispatchQueue(label: "com.scrapps.qucontroller.relay")
@@ -90,6 +99,30 @@ final class QuRelayMixerController: MixerController {
         // The current Mac relay protocol does not support a signal-monitoring command.
         // Relay snapshots may still include signal state when the host app has it enabled.
         _ = isEnabled
+    }
+
+    func startFaderWave(configuration: FaderWaveConfiguration) {
+        guard storedFaderWaveState.phase == .ready else { return }
+        Task {
+            do {
+                try await send(.startFaderWave(configuration: configuration))
+            } catch {
+                storedFaderWaveState = .failed("Fader Wave failed: \(error.localizedDescription)")
+                await handleConnectionFailure(error, endpoint: relayEndpoint, prefix: "Send failed")
+            }
+        }
+    }
+
+    func stopFaderWave() {
+        guard storedFaderWaveState.isActive else { return }
+        Task {
+            do {
+                try await send(.stopFaderWave())
+            } catch {
+                storedFaderWaveState = .failed("Fader Wave failed: \(error.localizedDescription)")
+                await handleConnectionFailure(error, endpoint: relayEndpoint, prefix: "Send failed")
+            }
+        }
     }
 
     private func makeConnection(for endpoint: MixerEndpoint) throws -> NWConnection {
@@ -201,6 +234,9 @@ final class QuRelayMixerController: MixerController {
             }
 
             storedChannels = channelSnapshots.map(\.channelState)
+            storedFaderWaveState = message.faderWave ?? .failed(
+                "The connected Mac relay does not support Fader Wave. Update Qu Controller Mac."
+            )
             storedConnectionState = MixerConnectionState(
                 phase: resolvedPhase(from: connectionSnapshot.phase),
                 message: formattedRelayMessage(from: connectionSnapshot, endpoint: endpoint),
@@ -273,12 +309,16 @@ final class QuRelayMixerController: MixerController {
 
     private func disconnectTransport(updateState: Bool, intentional: Bool) async {
         isIntentionalDisconnect = intentional
+        if storedFaderWaveState.isActive, connection != nil {
+            try? await send(.stopFaderWave())
+        }
         connection?.stateUpdateHandler = nil
         connection?.cancel()
         connection = nil
         relayEndpoint = nil
         receiveBuffer.removeAll(keepingCapacity: false)
         storedChannels = QuNetworkMixerController.makeInitialChannels()
+        storedFaderWaveState = .disconnected
 
         if updateState {
             storedConnectionState = MixerConnectionState(

@@ -11,4 +11,21 @@ enum AppSettingsKey {
     static let autoScanOnLaunch = "settings.autoScanOnLaunch"
     static let autoConnectLastKnownHostOnLaunch = "settings.autoConnectLastKnownHostOnLaunch"
     static let showSignalIndicators = "settings.showSignalIndicators"
+    static let faderWaveCycles = "settings.faderWave.cycles"
+    static let faderWaveSpeed = "settings.faderWave.speed"
+}
+
+enum AppSettings {
+    static func loadFaderWaveConfiguration(
+        from userDefaults: UserDefaults = .standard
+    ) -> FaderWaveConfiguration {
+        let cycles = userDefaults.object(forKey: AppSettingsKey.faderWaveCycles) == nil
+            ? FaderWaveConfiguration.defaultCycles
+            : userDefaults.double(forKey: AppSettingsKey.faderWaveCycles)
+        let speed = userDefaults.object(forKey: AppSettingsKey.faderWaveSpeed) == nil
+            ? FaderWaveConfiguration.defaultSpeed
+            : userDefaults.double(forKey: AppSettingsKey.faderWaveSpeed)
+
+        return FaderWaveConfiguration(cycles: cycles, speed: speed)
+    }
 }
