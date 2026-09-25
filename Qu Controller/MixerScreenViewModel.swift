@@ -36,6 +36,9 @@ final class MixerScreenViewModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var discoveryTask: Task<Void, Never>?
     private var launchAutoConnectHost: String?
+    private var connectionToRestoreAfterBackground: MixerEndpoint?
+    private var foregroundReconnectTask: Task<Void, Never>?
+    private var isApplicationActive = true
 
     init(
         controllerMode: MixerControllerFactory.ControllerMode,
@@ -261,6 +264,7 @@ final class MixerScreenViewModel: ObservableObject {
     func toggleConnection(relayPortOverride: Int? = nil) {
         switch connectionState.phase {
         case .connected, .connecting:
+            cancelBackgroundConnectionRestoration()
             controller.disconnect()
         case .disconnected, .error:
             let connectionHost = host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -280,7 +284,32 @@ final class MixerScreenViewModel: ObservableObject {
 
     func disconnectCurrentSession() {
         stopScanningForMixer()
+        cancelBackgroundConnectionRestoration()
         controller.disconnect()
+    }
+
+    /// Records an active session for restoration and tells the app whether it
+    /// should request a short background execution window from iOS.
+    @discardableResult
+    func applicationDidEnterBackground() -> Bool {
+        isApplicationActive = false
+        foregroundReconnectTask?.cancel()
+        foregroundReconnectTask = nil
+
+        guard connectionState.phase == .connected || connectionState.phase == .connecting,
+              let endpoint = connectionState.endpoint else {
+            return false
+        }
+
+        connectionToRestoreAfterBackground = endpoint
+        return true
+    }
+
+    /// If iOS suspended long enough for the TCP socket to fail, reconnect to
+    /// the exact endpoint that was active before the app went into background.
+    func applicationDidBecomeActive() {
+        isApplicationActive = true
+        scheduleForegroundReconnectIfNeeded()
     }
 
     func updateHost(_ host: String) {
@@ -351,6 +380,7 @@ final class MixerScreenViewModel: ObservableObject {
     }
 
     func shutdownMixer() {
+        cancelBackgroundConnectionRestoration()
         Task {
             await controller.shutdownMixer()
         }
@@ -611,6 +641,10 @@ final class MixerScreenViewModel: ObservableObject {
     private func handleConnectionStateChange(_ state: MixerConnectionState) {
         startDiscoveryFallbackIfNeeded(for: state)
 
+        if state.phase == .error || state.phase == .disconnected {
+            scheduleForegroundReconnectIfNeeded()
+        }
+
         guard state.phase == .connected else {
             return
         }
@@ -637,5 +671,51 @@ final class MixerScreenViewModel: ObservableObject {
             successfulHost = trimmedHost.isEmpty ? hostPlaceholder : trimmedHost
             userDefaults.set(successfulHost, forKey: AppSettingsKey.relayLastSuccessfulHost)
         }
+    }
+
+    private func scheduleForegroundReconnectIfNeeded() {
+        guard isApplicationActive,
+              let endpoint = connectionToRestoreAfterBackground,
+              connectionState.phase != .connected,
+              connectionState.phase != .connecting,
+              foregroundReconnectTask == nil else {
+            return
+        }
+
+        foregroundReconnectTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.foregroundReconnectTask = nil }
+
+            // Give Network.framework a moment to deliver any state transition
+            // queued while the process was suspended.
+            try? await Task.sleep(for: .milliseconds(350))
+
+            for attempt in 0 ..< 3 {
+                guard !Task.isCancelled,
+                      self.isApplicationActive,
+                      self.connectionToRestoreAfterBackground == endpoint else {
+                    return
+                }
+
+                if self.connectionState.phase == .connected || self.connectionState.phase == .connecting {
+                    return
+                }
+
+                await self.controller.connect(to: endpoint)
+                if self.connectionState.phase == .connected {
+                    return
+                }
+
+                if attempt < 2 {
+                    try? await Task.sleep(for: .seconds(attempt + 1))
+                }
+            }
+        }
+    }
+
+    private func cancelBackgroundConnectionRestoration() {
+        connectionToRestoreAfterBackground = nil
+        foregroundReconnectTask?.cancel()
+        foregroundReconnectTask = nil
     }
 }
