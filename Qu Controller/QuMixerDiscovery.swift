@@ -30,6 +30,14 @@ struct QuMixerDiscovery {
     }
 
     func discoverMixer(preferredHost: String? = nil) async -> String? {
+        if let discoveredHost = await discoverUsingBroadcast(),
+           await probe(host: discoveredHost) {
+            Self.logger.info(
+                "Discovered Qu mixer at \(discoveredHost, privacy: .public) using UDP broadcast"
+            )
+            return discoveredHost
+        }
+
         guard let subnet = LocalSubnet.active,
               let hosts = prioritizedHosts(
                 from: subnet,
@@ -55,6 +63,130 @@ struct QuMixerDiscovery {
         }
 
         return await scanState.foundHost
+    }
+
+    private func discoverUsingBroadcast() async -> String? {
+        await Task.detached(priority: .userInitiated) {
+            Self.performBroadcastDiscovery()
+        }.value
+    }
+
+    /// Implements the discovery exchange used by Qu-Pad: broadcast the ASCII
+    /// payload `QU Find` to UDP 51320 and accept a null-terminated Qu model name
+    /// from the responding mixer's source address.
+    nonisolated private static func performBroadcastDiscovery() -> String? {
+        let discoveryPort: UInt16 = 51_320
+        let discoveryRequest = Data("QU Find".utf8)
+        let socketDescriptor = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        guard socketDescriptor >= 0 else {
+            return nil
+        }
+        defer { close(socketDescriptor) }
+
+        var broadcastEnabled: Int32 = 1
+        guard setsockopt(
+            socketDescriptor,
+            SOL_SOCKET,
+            SO_BROADCAST,
+            &broadcastEnabled,
+            socklen_t(MemoryLayout.size(ofValue: broadcastEnabled))
+        ) == 0 else {
+            return nil
+        }
+
+        var destination = sockaddr_in()
+        destination.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        destination.sin_family = sa_family_t(AF_INET)
+        destination.sin_port = discoveryPort.bigEndian
+        destination.sin_addr = in_addr(s_addr: INADDR_BROADCAST)
+
+        var didSendRequest = false
+        for _ in 0 ..< 2 {
+            let sentByteCount = discoveryRequest.withUnsafeBytes { requestBytes in
+                withUnsafePointer(to: &destination) { destinationPointer in
+                    destinationPointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
+                        sendto(
+                            socketDescriptor,
+                            requestBytes.baseAddress,
+                            requestBytes.count,
+                            0,
+                            socketAddress,
+                            socklen_t(MemoryLayout<sockaddr_in>.size)
+                        )
+                    }
+                }
+            }
+            didSendRequest = didSendRequest || sentByteCount == discoveryRequest.count
+        }
+
+        guard didSendRequest else {
+            return nil
+        }
+
+        let deadline = Date().addingTimeInterval(1)
+        while true {
+            let remainingMilliseconds = Int(deadline.timeIntervalSinceNow * 1_000)
+            guard remainingMilliseconds > 0 else {
+                return nil
+            }
+
+            var pollDescriptor = pollfd(
+                fd: socketDescriptor,
+                events: Int16(POLLIN),
+                revents: 0
+            )
+            guard poll(&pollDescriptor, 1, Int32(remainingMilliseconds)) > 0 else {
+                return nil
+            }
+
+            var source = sockaddr_in()
+            var sourceLength = socklen_t(MemoryLayout<sockaddr_in>.size)
+            var response = [UInt8](repeating: 0, count: 64)
+            let responseCapacity = response.count
+            let receivedByteCount = response.withUnsafeMutableBytes { responseBytes in
+                withUnsafeMutablePointer(to: &source) { sourcePointer in
+                    sourcePointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
+                        recvfrom(
+                            socketDescriptor,
+                            responseBytes.baseAddress,
+                            responseCapacity,
+                            0,
+                            socketAddress,
+                            &sourceLength
+                        )
+                    }
+                }
+            }
+
+            guard receivedByteCount > 1,
+                  source.sin_family == sa_family_t(AF_INET),
+                  UInt16(bigEndian: source.sin_port) == discoveryPort else {
+                continue
+            }
+
+            let payload = response.prefix(Int(receivedByteCount))
+            let modelBytes = payload.last == 0 ? payload.dropLast() : payload[...]
+            guard let model = String(bytes: modelBytes, encoding: .ascii),
+                  model.hasPrefix("Qu-") else {
+                continue
+            }
+
+            var sourceAddress = source.sin_addr
+            var addressBuffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+            let convertedAddress = addressBuffer.withUnsafeMutableBufferPointer { buffer in
+                inet_ntop(
+                    AF_INET,
+                    &sourceAddress,
+                    buffer.baseAddress,
+                    socklen_t(buffer.count)
+                )
+            }
+            guard convertedAddress != nil else {
+                continue
+            }
+
+            return String(cString: addressBuffer)
+        }
     }
 
     func isMixerReachable(at host: String) async -> Bool {
