@@ -6,12 +6,15 @@
 //
 
 import SwiftUI
+import UIKit
 
 @main
 struct Qu_ControllerApp: App {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var transportMode: MixerTransportMode
     @State private var isUsingMockConnection: Bool
     @State private var viewModel: MixerScreenViewModel
+    @State private var backgroundConnectionKeeper = BackgroundConnectionKeeper()
 
     init() {
         let initialControllerMode = MixerControllerFactory.currentControllerMode()
@@ -37,6 +40,26 @@ struct Qu_ControllerApp: App {
                 onApplyConnectionMode: applyConnectionMode(_:)
             )
             .id("\(transportMode.rawValue)-\(isUsingMockConnection)")
+            .onChange(of: scenePhase) { _, newPhase in
+                handleScenePhaseChange(newPhase)
+            }
+        }
+    }
+
+    @MainActor
+    private func handleScenePhaseChange(_ phase: ScenePhase) {
+        switch phase {
+        case .background:
+            if viewModel.applicationDidEnterBackground() {
+                backgroundConnectionKeeper.begin()
+            }
+        case .active:
+            backgroundConnectionKeeper.end()
+            viewModel.applicationDidBecomeActive()
+        case .inactive:
+            break
+        @unknown default:
+            break
         }
     }
 
@@ -95,5 +118,34 @@ struct Qu_ControllerApp: App {
         case .demo:
             (transportMode: transportMode, isUsingMockConnection: true)
         }
+    }
+}
+
+/// Requests the finite amount of background execution time that iOS grants for
+/// completing in-flight work. This keeps the mixer socket and active-sensing
+/// loop alive during brief app switches; it is not an unlimited background mode.
+@MainActor
+private final class BackgroundConnectionKeeper {
+    private var taskIdentifier: UIBackgroundTaskIdentifier = .invalid
+
+    func begin() {
+        guard taskIdentifier == .invalid else {
+            return
+        }
+
+        taskIdentifier = UIApplication.shared.beginBackgroundTask(
+            withName: "Keep mixer connection alive"
+        ) { [weak self] in
+            self?.end()
+        }
+    }
+
+    func end() {
+        guard taskIdentifier != .invalid else {
+            return
+        }
+
+        UIApplication.shared.endBackgroundTask(taskIdentifier)
+        taskIdentifier = .invalid
     }
 }
