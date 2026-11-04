@@ -14,6 +14,7 @@ struct ContentView: View {
     let isUsingMockConnection: Bool
     let transportMode: MixerTransportMode
     let onApplyConnectionMode: (ConnectionModeOption) -> Void
+    let onResetApp: () -> Void
 
     @StateObject private var chromeModel: ContentChromeModel
     @State private var relayPortText: String
@@ -28,12 +29,14 @@ struct ContentView: View {
         viewModel: MixerScreenViewModel,
         isUsingMockConnection: Bool,
         transportMode: MixerTransportMode,
-        onApplyConnectionMode: @escaping (ConnectionModeOption) -> Void
+        onApplyConnectionMode: @escaping (ConnectionModeOption) -> Void,
+        onResetApp: @escaping () -> Void
     ) {
         self.viewModel = viewModel
         self.isUsingMockConnection = isUsingMockConnection
         self.transportMode = transportMode
         self.onApplyConnectionMode = onApplyConnectionMode
+        self.onResetApp = onResetApp
         _chromeModel = StateObject(wrappedValue: ContentChromeModel(viewModel: viewModel))
         _relayPortText = State(initialValue: String(viewModel.relayPort))
     }
@@ -73,7 +76,8 @@ struct ContentView: View {
                 viewModel: viewModel,
                 isUsingMockConnection: isUsingMockConnection,
                 transportMode: transportMode,
-                onApplyConnectionMode: onApplyConnectionMode
+                onApplyConnectionMode: onApplyConnectionMode,
+                onResetApp: onResetApp
             )
         }
         .confirmationDialog(
@@ -141,45 +145,27 @@ struct ContentView: View {
     }
 
     private var connectedOverflowMenu: some View {
-        Menu {
-            if viewModel.isFaderWaveActive {
-                Button(role: .destructive) {
-                    viewModel.stopFaderWave()
-                } label: {
-                    Label("Stop Fader Wave", systemImage: "stop.circle")
-                }
-            } else {
-                Button {
-                    isShowingFaderWaveControls = true
-                } label: {
-                    Label("Fader Wave", systemImage: "waveform.path")
-                }
-            }
-
-            Button {
+        ConnectedOverflowMenu(
+            isFaderWaveActive: viewModel.isFaderWaveActive,
+            onShowFaderWave: {
+                isShowingFaderWaveControls = true
+            },
+            onStopFaderWave: viewModel.stopFaderWave,
+            onShowSettings: {
                 isShowingSettings = true
-            } label: {
-                Label("Settings", systemImage: "gearshape")
-            }
-
-            Button {
+            },
+            onDisconnect: {
                 viewModel.toggleConnection()
-            } label: {
-                Label("Disconnect", systemImage: "cable.connector.slash")
-            }
-
-            Button(role: .destructive) {
+            },
+            onShutdown: {
                 if viewModel.confirmBeforeShutdown {
                     isShowingShutdownConfirmation = true
                 } else {
                     viewModel.shutdownMixer()
                 }
-            } label: {
-                Label("Shut Down Mixer", systemImage: "power")
             }
-        } label: {
-            Image(systemName: "ellipsis.circle")
-        }
+        )
+        .equatable()
     }
 
     private var disconnectedContent: some View {
@@ -992,6 +978,50 @@ private struct StatusBadge: View {
     }
 }
 
+/// Keeps UIKit's menu presentation hierarchy stable while high-frequency
+/// mixer channel and meter updates redraw the surrounding screen.
+private struct ConnectedOverflowMenu: View, Equatable {
+    let isFaderWaveActive: Bool
+    let onShowFaderWave: () -> Void
+    let onStopFaderWave: () -> Void
+    let onShowSettings: () -> Void
+    let onDisconnect: () -> Void
+    let onShutdown: () -> Void
+
+    static func == (lhs: ConnectedOverflowMenu, rhs: ConnectedOverflowMenu) -> Bool {
+        lhs.isFaderWaveActive == rhs.isFaderWaveActive
+    }
+
+    var body: some View {
+        Menu {
+            if isFaderWaveActive {
+                Button(role: .destructive, action: onStopFaderWave) {
+                    Label("Stop Fader Wave", systemImage: "stop.circle")
+                }
+            } else {
+                Button(action: onShowFaderWave) {
+                    Label("Fader Wave", systemImage: "waveform.path")
+                }
+            }
+
+            Button(action: onShowSettings) {
+                Label("Settings", systemImage: "gearshape")
+            }
+
+            Button(action: onDisconnect) {
+                Label("Disconnect", systemImage: "cable.connector.slash")
+            }
+
+            Button(role: .destructive, action: onShutdown) {
+                Label("Shut Down Mixer", systemImage: "power")
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+        .menuOrder(.fixed)
+    }
+}
+
 struct ContentView_Previews: PreviewProvider {
     static var previews: some View {
         ContentView(
@@ -1002,7 +1032,8 @@ struct ContentView_Previews: PreviewProvider {
             ),
             isUsingMockConnection: true,
             transportMode: .direct,
-            onApplyConnectionMode: { _ in }
+            onApplyConnectionMode: { _ in },
+            onResetApp: {}
         )
     }
 }
