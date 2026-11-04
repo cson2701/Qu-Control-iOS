@@ -10,78 +10,64 @@ import OSLog
 
 struct QuMixerDiscovery {
     private static let logger = Logger(subsystem: "QuController", category: "MixerDiscovery")
-    private static let privateClassBPrefixOctet1: UInt32 = 192
-    private static let privateClassBPrefixOctet2: UInt32 = 168
     private let port: UInt16
     private let connectTimeout: Duration
-    private let concurrencyLimit: Int
-    private let maximumHostsToScan: Int
 
     init(
         port: UInt16 = 51_325,
-        connectTimeout: Duration = .milliseconds(250),
-        concurrencyLimit: Int = 32,
-        maximumHostsToScan: Int = 4096
+        connectTimeout: Duration = .milliseconds(250)
     ) {
         self.port = port
         self.connectTimeout = connectTimeout
-        self.concurrencyLimit = concurrencyLimit
-        self.maximumHostsToScan = maximumHostsToScan
     }
 
     func discoverMixer(preferredHost: String? = nil) async -> String? {
-        if let discoveredHost = await discoverUsingBroadcast(),
-           await probe(host: discoveredHost) {
+        _ = preferredHost
+
+        if let discoveredHost = await discoverUsingBroadcast() {
             Self.logger.info(
                 "Discovered Qu mixer at \(discoveredHost, privacy: .public) using UDP broadcast"
             )
             return discoveredHost
         }
 
-        guard let subnet = LocalSubnet.active,
-              let hosts = prioritizedHosts(
-                from: subnet,
-                preferredHost: preferredHost,
-                maximumCount: maximumHostsToScan
-              ),
-              !hosts.isEmpty else {
-            return nil
-        }
-
-        Self.logger.info(
-            "Starting mixer discovery from local address \(subnet.ipv4Address, privacy: .public) on subnet \(subnet.subnetDescription, privacy: .public) with \(hosts.count) hosts"
-        )
-
-        let scanState = ScanState(hosts: hosts)
-
-        await withTaskGroup(of: Void.self) { group in
-            for _ in 0 ..< min(concurrencyLimit, hosts.count) {
-                group.addTask {
-                    await scanHosts(using: scanState)
-                }
-            }
-        }
-
-        return await scanState.foundHost
+        Self.logger.info("Qu mixer discovery finished without a response")
+        return nil
     }
 
     private func discoverUsingBroadcast() async -> String? {
-        await Task.detached(priority: .userInitiated) {
-            Self.performBroadcastDiscovery()
+        let directedBroadcastAddress = LocalSubnet.active?.directedBroadcastAddress
+        return await Task.detached(priority: .userInitiated) {
+            Self.performBroadcastDiscovery(directedBroadcastAddress: directedBroadcastAddress)
         }.value
     }
 
     /// Implements the discovery exchange used by Qu-Pad: broadcast the ASCII
     /// payload `QU Find` to UDP 51320 and accept a null-terminated Qu model name
     /// from the responding mixer's source address.
-    nonisolated private static func performBroadcastDiscovery() -> String? {
+    nonisolated private static func performBroadcastDiscovery(
+        directedBroadcastAddress: UInt32?
+    ) -> String? {
         let discoveryPort: UInt16 = 51_320
         let discoveryRequest = Data("QU Find".utf8)
         let socketDescriptor = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
         guard socketDescriptor >= 0 else {
+            Self.logger.error("Could not create Qu discovery socket: errno \(errno)")
             return nil
         }
         defer { close(socketDescriptor) }
+
+        var reuseAddress: Int32 = 1
+        guard setsockopt(
+            socketDescriptor,
+            SOL_SOCKET,
+            SO_REUSEADDR,
+            &reuseAddress,
+            socklen_t(MemoryLayout.size(ofValue: reuseAddress))
+        ) == 0 else {
+            Self.logger.error("Could not configure Qu discovery socket reuse: errno \(errno)")
+            return nil
+        }
 
         var broadcastEnabled: Int32 = 1
         guard setsockopt(
@@ -91,35 +77,68 @@ struct QuMixerDiscovery {
             &broadcastEnabled,
             socklen_t(MemoryLayout.size(ofValue: broadcastEnabled))
         ) == 0 else {
+            Self.logger.error("Could not enable Qu discovery broadcasts: errno \(errno)")
             return nil
         }
 
-        var destination = sockaddr_in()
-        destination.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        destination.sin_family = sa_family_t(AF_INET)
-        destination.sin_port = discoveryPort.bigEndian
-        destination.sin_addr = in_addr(s_addr: INADDR_BROADCAST)
+        // Qu mixers send discovery replies to UDP 51320. Binding explicitly is
+        // required; otherwise the request uses an ephemeral source port and the
+        // mixer response is not delivered to this socket.
+        var localAddress = sockaddr_in()
+        localAddress.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        localAddress.sin_family = sa_family_t(AF_INET)
+        localAddress.sin_port = discoveryPort.bigEndian
+        localAddress.sin_addr = in_addr(s_addr: INADDR_ANY)
+
+        let didBind = withUnsafePointer(to: &localAddress) { localAddressPointer in
+            localAddressPointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
+                bind(
+                    socketDescriptor,
+                    socketAddress,
+                    socklen_t(MemoryLayout<sockaddr_in>.size)
+                )
+            }
+        }
+        guard didBind == 0 else {
+            Self.logger.error("Could not bind Qu discovery socket to UDP 51320: errno \(errno)")
+            return nil
+        }
 
         var didSendRequest = false
-        for _ in 0 ..< 2 {
-            let sentByteCount = discoveryRequest.withUnsafeBytes { requestBytes in
-                withUnsafePointer(to: &destination) { destinationPointer in
-                    destinationPointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
-                        sendto(
-                            socketDescriptor,
-                            requestBytes.baseAddress,
-                            requestBytes.count,
-                            0,
-                            socketAddress,
-                            socklen_t(MemoryLayout<sockaddr_in>.size)
-                        )
+        var destinationAddresses = [INADDR_BROADCAST]
+        if let directedBroadcastAddress,
+           !destinationAddresses.contains(directedBroadcastAddress) {
+            destinationAddresses.append(directedBroadcastAddress)
+        }
+
+        for destinationAddress in destinationAddresses {
+            var destination = sockaddr_in()
+            destination.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+            destination.sin_family = sa_family_t(AF_INET)
+            destination.sin_port = discoveryPort.bigEndian
+            destination.sin_addr = in_addr(s_addr: destinationAddress)
+
+            for _ in 0 ..< 2 {
+                let sentByteCount = discoveryRequest.withUnsafeBytes { requestBytes in
+                    withUnsafePointer(to: &destination) { destinationPointer in
+                        destinationPointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
+                            sendto(
+                                socketDescriptor,
+                                requestBytes.baseAddress,
+                                requestBytes.count,
+                                0,
+                                socketAddress,
+                                socklen_t(MemoryLayout<sockaddr_in>.size)
+                            )
+                        }
                     }
                 }
+                didSendRequest = didSendRequest || sentByteCount == discoveryRequest.count
             }
-            didSendRequest = didSendRequest || sentByteCount == discoveryRequest.count
         }
 
         guard didSendRequest else {
+            Self.logger.error("Could not send Qu discovery broadcast: errno \(errno)")
             return nil
         }
 
@@ -127,6 +146,7 @@ struct QuMixerDiscovery {
         while true {
             let remainingMilliseconds = Int(deadline.timeIntervalSinceNow * 1_000)
             guard remainingMilliseconds > 0 else {
+                Self.logger.info("Qu discovery broadcast timed out without a response")
                 return nil
             }
 
@@ -136,6 +156,7 @@ struct QuMixerDiscovery {
                 revents: 0
             )
             guard poll(&pollDescriptor, 1, Int32(remainingMilliseconds)) > 0 else {
+                Self.logger.info("Qu discovery broadcast timed out while waiting for a response")
                 return nil
             }
 
@@ -186,81 +207,6 @@ struct QuMixerDiscovery {
             }
 
             return String(cString: addressBuffer)
-        }
-    }
-
-    func isMixerReachable(at host: String) async -> Bool {
-        await probe(host: host)
-    }
-
-    private func prioritizedHosts(
-        from subnet: LocalSubnet,
-        preferredHost: String?,
-        maximumCount: Int
-    ) -> [String]? {
-        let scanSubnets = candidateSubnets(for: subnet)
-        var hosts: [String] = []
-        hosts.reserveCapacity(maximumCount)
-
-        if let preferredHost, !preferredHost.isEmpty {
-            hosts.append(preferredHost)
-        }
-
-        for scanSubnet in scanSubnets {
-            let remainingCapacity = maximumCount - hosts.count
-            guard remainingCapacity > 0 else {
-                break
-            }
-
-            let subnetHosts = scanSubnet.hostAddresses(
-                maximumCount: remainingCapacity,
-                preferredHostAddress: subnet.address
-            )
-            for host in subnetHosts where !hosts.contains(host) {
-                hosts.append(host)
-            }
-        }
-
-        return hosts.isEmpty ? nil : hosts
-    }
-
-    private func candidateSubnets(for subnet: LocalSubnet) -> [LocalSubnet] {
-        guard subnet.isPrivate192168 else {
-            return [subnet.discoverySubnet]
-        }
-
-        let thirdOctets = prioritizedThirdOctets(near: subnet.thirdOctet)
-        return thirdOctets.map { thirdOctet in
-            LocalSubnet(
-                address: LocalSubnet.ipv4Address(
-                    octet1: Self.privateClassBPrefixOctet1,
-                    octet2: Self.privateClassBPrefixOctet2,
-                    octet3: UInt32(thirdOctet),
-                    octet4: subnet.fourthOctet
-                ),
-                netmask: LocalSubnet.discoveryNetmaskValue
-            )
-        }
-    }
-
-    private func prioritizedThirdOctets(near localThirdOctet: Int) -> [Int] {
-        (0 ... 255).sorted { lhs, rhs in
-            abs(lhs - localThirdOctet) < abs(rhs - localThirdOctet)
-        }
-    }
-
-    private func scanHosts(using scanState: ScanState) async {
-        while !Task.isCancelled {
-            guard let host = await scanState.nextHost() else {
-                return
-            }
-
-            Self.logger.info("Scanning mixer candidate \(host, privacy: .public)")
-
-            if await probe(host: host) {
-                await scanState.setFoundHost(host)
-                return
-            }
         }
     }
 
@@ -396,36 +342,14 @@ struct QuMixerDiscovery {
     }
 }
 
-private actor ScanState {
-    private var remainingHosts: ArraySlice<String>
-    private(set) var foundHost: String?
-
-    init(hosts: [String]) {
-        remainingHosts = ArraySlice(hosts)
-    }
-
-    func nextHost() -> String? {
-        guard foundHost == nil, let host = remainingHosts.popFirst() else {
-            return nil
-        }
-
-        return host
-    }
-
-    func setFoundHost(_ host: String) {
-        guard foundHost == nil else {
-            return
-        }
-
-        foundHost = host
-        remainingHosts = []
-    }
-}
-
 private struct LocalSubnet {
     static let discoveryNetmaskValue: UInt32 = 0xFF_FF_FF_00
     let address: UInt32
     let netmask: UInt32
+
+    var directedBroadcastAddress: UInt32 {
+        ((address & netmask) | ~netmask).bigEndian
+    }
 
     static var active: LocalSubnet? {
         var interfaces: UnsafeMutablePointer<ifaddrs>?

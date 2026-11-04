@@ -45,16 +45,19 @@ final class QuNetworkMixerController: MixerController {
 
     private let connectionQueue = DispatchQueue(label: "com.scrapps.qucontroller.network")
     private let connectionTimeout: Duration = .seconds(5)
+    private let inboundActivityTimeout: Duration = .seconds(5)
     private let signalPublishInterval: Duration = .milliseconds(300)
     private var connection: NWConnection?
     private var activeSenseTask: Task<Void, Never>?
     private var connectionTimeoutTask: Task<Void, Never>?
+    private var inboundActivityTimeoutTask: Task<Void, Never>?
     private var signalPublishTask: Task<Void, Never>?
     private var midiChannel: UInt8?
     private var mixerModel: QuMixerModel?
     private var byteBuffer: [UInt8] = []
     private var nrpnState = NRPNState()
     private var isIntentionalDisconnect = false
+    private var isShutdownInProgress = false
     private var isSignalMonitoringEnabled = false
     private var pendingSignalStates: [MixerChannelID: Bool] = [:]
     private var mainLRGEQValues: [UInt8: UInt8] = [:]
@@ -101,8 +104,10 @@ final class QuNetworkMixerController: MixerController {
 
         await stopFaderWaveAndWaitForRestoration()
 
+        isShutdownInProgress = true
         do {
             try await sendRemoteShutdown(midiChannel: midiChannel)
+            isShutdownInProgress = false
             let endpoint = storedConnectionState.endpoint
             await disconnectTransport(updateState: false, intentional: true)
             storedConnectionState = MixerConnectionState(
@@ -111,11 +116,16 @@ final class QuNetworkMixerController: MixerController {
                 endpoint: endpoint
             )
         } catch {
+            isShutdownInProgress = false
             await handleConnectionFailure(error, endpoint: storedConnectionState.endpoint, prefix: "Shutdown failed")
         }
     }
 
     func setLevel(for channelID: MixerChannelID, level: FaderLevel) {
+        guard connectionState.phase == .connected, let midiChannel else {
+            return
+        }
+
         storedChannels = storedChannels.map { channel in
             guard channel.id == channelID else {
                 return channel
@@ -127,10 +137,6 @@ final class QuNetworkMixerController: MixerController {
                 hasSignal: channel.hasSignal,
                 customName: channel.customName
             )
-        }
-
-        guard let midiChannel else {
-            return
         }
 
         Task {
@@ -153,6 +159,10 @@ final class QuNetworkMixerController: MixerController {
     }
 
     func setMute(for channelID: MixerChannelID, isMuted: Bool) {
+        guard connectionState.phase == .connected, let midiChannel else {
+            return
+        }
+
         storedChannels = storedChannels.map { channel in
             guard channel.id == channelID else {
                 return channel
@@ -165,10 +175,6 @@ final class QuNetworkMixerController: MixerController {
                 hasSignal: channel.hasSignal,
                 customName: channel.customName
             )
-        }
-
-        guard let midiChannel else {
-            return
         }
 
         Task {
@@ -282,12 +288,17 @@ final class QuNetworkMixerController: MixerController {
             guard let self else { return }
 
             Task { @MainActor in
+                guard self.connection === nwConnection else {
+                    return
+                }
+
                 if let error {
                     await self.handleConnectionFailure(error, endpoint: endpoint, prefix: "Connection lost")
                     return
                 }
 
                 if let data, !data.isEmpty {
+                    self.recordInboundActivity(endpoint: endpoint)
                     self.byteBuffer.append(contentsOf: data)
                     self.processBufferedMessages(endpoint: endpoint)
                 }
@@ -597,6 +608,7 @@ final class QuNetworkMixerController: MixerController {
             connectionTimeoutTask = nil
             midiChannel = receivedMIDIChannel
             mixerModel = QuMixerModel(boxID: bytes[10])
+            recordInboundActivity(endpoint: endpoint)
             storedConnectionState = MixerConnectionState(
                 phase: .connected,
                 message: "Connected to \(endpoint.host):\(endpoint.port) on MIDI channel \(Int(receivedMIDIChannel) + 1)",
@@ -635,6 +647,35 @@ final class QuNetworkMixerController: MixerController {
                 MixerTransportError.connectionTimedOut(seconds: Int(connectionTimeout.components.seconds)),
                 endpoint: endpoint,
                 prefix: "Connection timed out"
+            )
+        }
+    }
+
+    private func recordInboundActivity(endpoint: MixerEndpoint) {
+        guard connectionState.endpoint == endpoint else {
+            return
+        }
+
+        inboundActivityTimeoutTask?.cancel()
+        inboundActivityTimeoutTask = Task { [weak self] in
+            guard let self else { return }
+
+            do {
+                try await Task.sleep(for: inboundActivityTimeout)
+            } catch {
+                return
+            }
+
+            guard !Task.isCancelled,
+                  self.connectionState.phase == .connected,
+                  self.connectionState.endpoint == endpoint else {
+                return
+            }
+
+            await self.handleConnectionFailure(
+                MixerTransportError.inboundActivityTimedOut(seconds: Int(self.inboundActivityTimeout.components.seconds)),
+                endpoint: endpoint,
+                prefix: "Connection lost"
             )
         }
     }
@@ -814,6 +855,8 @@ final class QuNetworkMixerController: MixerController {
         activeSenseTask = nil
         connectionTimeoutTask?.cancel()
         connectionTimeoutTask = nil
+        inboundActivityTimeoutTask?.cancel()
+        inboundActivityTimeoutTask = nil
         signalPublishTask?.cancel()
         signalPublishTask = nil
         connection?.stateUpdateHandler = nil
@@ -821,6 +864,7 @@ final class QuNetworkMixerController: MixerController {
         connection = nil
         midiChannel = nil
         mixerModel = nil
+        isShutdownInProgress = false
         byteBuffer.removeAll(keepingCapacity: false)
         nrpnState.clear()
         mainLRGEQValues.removeAll(keepingCapacity: false)
@@ -850,7 +894,7 @@ final class QuNetworkMixerController: MixerController {
         endpoint: MixerEndpoint?,
         prefix: String
     ) async {
-        if isIntentionalDisconnect {
+        if isIntentionalDisconnect || isShutdownInProgress {
             return
         }
 
@@ -935,6 +979,7 @@ private enum MixerTransportError: LocalizedError {
     case notConnected
     case connectionClosed
     case connectionTimedOut(seconds: Int)
+    case inboundActivityTimedOut(seconds: Int)
 
     var errorDescription: String? {
         switch self {
@@ -948,6 +993,8 @@ private enum MixerTransportError: LocalizedError {
             "Connection closed by mixer"
         case .connectionTimedOut(let seconds):
             "No response within \(seconds) seconds"
+        case .inboundActivityTimedOut(let seconds):
+            "No mixer activity received for \(seconds) seconds"
         }
     }
 }
