@@ -39,6 +39,7 @@ final class MixerScreenViewModel: ObservableObject {
     private var connectionToRestoreAfterBackground: MixerEndpoint?
     private var foregroundReconnectTask: Task<Void, Never>?
     private var isApplicationActive = true
+    private var hasStartedInitialConnectionFlow = false
 
     init(
         controllerMode: MixerControllerFactory.ControllerMode,
@@ -51,11 +52,7 @@ final class MixerScreenViewModel: ObservableObject {
         self.transportMode = transportMode
         self.controller = controller
         self.userDefaults = userDefaults
-        let rememberedEndpoint = Self.loadRememberedEndpoint(
-            from: userDefaults,
-            transportMode: transportMode
-        )
-        host = rememberedEndpoint.host
+        host = Self.loadStoredHost(from: userDefaults, transportMode: transportMode) ?? ""
         channels = controller.channels
         connectionState = controller.connectionState
         faderWaveState = controller.faderWaveState
@@ -142,7 +139,7 @@ final class MixerScreenViewModel: ObservableObject {
     }
 
     var rememberedHost: String? {
-        Self.loadRememberedEndpoint(from: userDefaults, transportMode: transportMode).host
+        Self.loadStoredHost(from: userDefaults, transportMode: transportMode)
     }
 
     var hostPlaceholder: String {
@@ -309,6 +306,7 @@ final class MixerScreenViewModel: ObservableObject {
     /// the exact endpoint that was active before the app went into background.
     func applicationDidBecomeActive() {
         isApplicationActive = true
+        startInitialConnectionFlowIfNeeded()
         scheduleForegroundReconnectIfNeeded()
     }
 
@@ -491,6 +489,24 @@ final class MixerScreenViewModel: ObservableObject {
         }
     }
 
+    private static func loadStoredHost(
+        from userDefaults: UserDefaults,
+        transportMode: MixerTransportMode
+    ) -> String? {
+        let key = switch transportMode {
+        case .direct:
+            AppSettingsKey.lastSuccessfulHost
+        case .relay:
+            AppSettingsKey.relayLastSuccessfulHost
+        }
+
+        guard let host = userDefaults.string(forKey: key), !host.isEmpty else {
+            return nil
+        }
+
+        return host
+    }
+
     private static func loadConfirmBeforeShutdown(from userDefaults: UserDefaults) -> Bool {
         guard userDefaults.object(forKey: AppSettingsKey.confirmBeforeShutdown) != nil else {
             return true
@@ -549,7 +565,12 @@ final class MixerScreenViewModel: ObservableObject {
         }
     }
 
-    private func startInitialConnectionFlowIfNeeded() {
+    func startInitialConnectionFlowIfNeeded() {
+        guard !hasStartedInitialConnectionFlow else {
+            return
+        }
+        hasStartedInitialConnectionFlow = true
+
         guard controllerMode != .mock else {
             return
         }
@@ -578,15 +599,7 @@ final class MixerScreenViewModel: ObservableObject {
             if self.transportMode == .relay {
                 await self.controller.connect(to: rememberedEndpoint)
             } else {
-                let discovery = QuMixerDiscovery()
-                if await discovery.isMixerReachable(at: rememberedEndpoint.host) {
-                    await self.controller.connect(to: rememberedEndpoint)
-                } else {
-                    self.launchAutoConnectHost = nil
-                    if self.autoScanOnLaunch {
-                        self.startDiscovery()
-                    }
-                }
+                await self.controller.connect(to: rememberedEndpoint)
             }
         }
     }
