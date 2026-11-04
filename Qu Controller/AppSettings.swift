@@ -16,6 +16,14 @@ enum AppSettingsKey {
 }
 
 enum AppSettings {
+    static func resetToDefaults(userDefaults: UserDefaults = .standard) {
+        guard let bundleIdentifier = Bundle.main.bundleIdentifier else {
+            return
+        }
+
+        userDefaults.removePersistentDomain(forName: bundleIdentifier)
+    }
+
     static func loadFaderWaveConfiguration(
         from userDefaults: UserDefaults = .standard
     ) -> FaderWaveConfiguration {

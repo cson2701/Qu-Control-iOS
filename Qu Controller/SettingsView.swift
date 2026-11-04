@@ -37,21 +37,25 @@ struct SettingsView: View {
     let isUsingMockConnection: Bool
     let transportMode: MixerTransportMode
     let onApplyConnectionMode: (ConnectionModeOption) -> Void
+    let onResetApp: () -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var draftConnectionMode: ConnectionModeOption
     @State private var hasAppliedDraftConnectionMode = false
+    @State private var isShowingResetConfirmation = false
 
     init(
         viewModel: MixerScreenViewModel,
         isUsingMockConnection: Bool,
         transportMode: MixerTransportMode,
-        onApplyConnectionMode: @escaping (ConnectionModeOption) -> Void
+        onApplyConnectionMode: @escaping (ConnectionModeOption) -> Void,
+        onResetApp: @escaping () -> Void
     ) {
         self.viewModel = viewModel
         self.isUsingMockConnection = isUsingMockConnection
         self.transportMode = transportMode
         self.onApplyConnectionMode = onApplyConnectionMode
+        self.onResetApp = onResetApp
         _draftConnectionMode = State(
             initialValue: ConnectionModeOption(
                 isUsingMockConnection: isUsingMockConnection,
@@ -131,6 +135,14 @@ struct SettingsView: View {
                     }
                 }
 
+                Section {
+                    Button("Reset App", role: .destructive) {
+                        isShowingResetConfirmation = true
+                    }
+                } footer: {
+                    Text("Clears saved mixer addresses, connection settings, channel layout, and all other app preferences.")
+                }
+
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
@@ -146,6 +158,20 @@ struct SettingsView: View {
                         Image(systemName: "xmark")
                     }
                 }
+            }
+            .confirmationDialog(
+                "Reset Qu Controller?",
+                isPresented: $isShowingResetConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("Reset App", role: .destructive) {
+                    hasAppliedDraftConnectionMode = true
+                    dismiss()
+                    onResetApp()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This restores the app to its first-launch settings. Local network permission remains controlled by iOS Settings.")
             }
         }
     }

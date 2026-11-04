@@ -26,7 +26,8 @@ struct Qu_ControllerApp: App {
             initialValue: MixerScreenViewModel(
                 controllerMode: initialControllerMode,
                 transportMode: initialTransportMode,
-                controller: MixerControllerFactory.makeMixerController(mode: initialControllerMode)
+                controller: MixerControllerFactory.makeMixerController(mode: initialControllerMode),
+                startInitialConnectionFlow: false
             )
         )
     }
@@ -37,10 +38,11 @@ struct Qu_ControllerApp: App {
                 viewModel: viewModel,
                 isUsingMockConnection: isUsingMockConnection,
                 transportMode: transportMode,
-                onApplyConnectionMode: applyConnectionMode(_:)
+                onApplyConnectionMode: applyConnectionMode(_:),
+                onResetApp: resetApp
             )
             .id("\(transportMode.rawValue)-\(isUsingMockConnection)")
-            .onChange(of: scenePhase) { _, newPhase in
+            .onChange(of: scenePhase, initial: true) { _, newPhase in
                 handleScenePhaseChange(newPhase)
             }
         }
@@ -90,6 +92,22 @@ struct Qu_ControllerApp: App {
             transportMode: transportMode,
             controller: MixerControllerFactory.makeMixerController(mode: nextMode),
             startInitialConnectionFlow: startInitialConnectionFlow
+        )
+    }
+
+    @MainActor
+    private func resetApp() {
+        backgroundConnectionKeeper.end()
+        viewModel.disconnectCurrentSession()
+        AppSettings.resetToDefaults()
+
+        transportMode = .direct
+        isUsingMockConnection = false
+        let defaultMode = MixerControllerFactory.ControllerMode.direct
+        viewModel = MixerScreenViewModel(
+            controllerMode: defaultMode,
+            transportMode: .direct,
+            controller: MixerControllerFactory.makeMixerController(mode: defaultMode)
         )
     }
 
