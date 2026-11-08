@@ -92,14 +92,14 @@ final class QuNetworkMixerController: MixerController {
         }
     }
 
-    func shutdownMixer() async {
+    func shutdownMixer() async throws {
         guard connectionState.phase == .connected, let midiChannel else {
             storedConnectionState = MixerConnectionState(
                 phase: .error,
                 message: "Shutdown unavailable: Connect to a mixer first",
                 endpoint: storedConnectionState.endpoint
             )
-            return
+            throw MixerShutdownCommandError.notConnected
         }
 
         await stopFaderWaveAndWaitForRestoration()
@@ -118,6 +118,7 @@ final class QuNetworkMixerController: MixerController {
         } catch {
             isShutdownInProgress = false
             await handleConnectionFailure(error, endpoint: storedConnectionState.endpoint, prefix: "Shutdown failed")
+            throw MixerShutdownCommandError.commandFailed(error.localizedDescription)
         }
     }
 

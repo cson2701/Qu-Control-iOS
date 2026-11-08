@@ -17,7 +17,9 @@ struct ShutdownMixerIntent: AppIntent {
             MixerShutdownShortcutService()
         }
         let result = try await service.shutdownMixerUsingRememberedHost()
-        let dialog = IntentDialog("Mixer at \(result.host) was shut down.")
+        let dialog = result.didTurnOffPlug
+            ? IntentDialog("Mixer at \(result.host) was shut down and its smart plug was turned off.")
+            : IntentDialog("Mixer at \(result.host) was shut down.")
 
         return .result(dialog: dialog)
     }

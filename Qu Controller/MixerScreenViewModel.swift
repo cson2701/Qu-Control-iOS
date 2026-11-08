@@ -15,6 +15,23 @@ final class MixerScreenViewModel: ObservableObject {
         case unavailable
     }
 
+    enum PowerOnConnectPhase: Equatable {
+        case idle
+        case checkingPower
+        case poweringOn
+        case waitingForMixer(attempt: Int)
+        case failed(String)
+
+        var isActive: Bool {
+            switch self {
+            case .checkingPower, .poweringOn, .waitingForMixer:
+                true
+            case .idle, .failed:
+                false
+            }
+        }
+    }
+
     @Published var host: String
     @Published private(set) var channels: [MixerChannelState]
     @Published private(set) var connectionState: MixerConnectionState
@@ -28,16 +45,22 @@ final class MixerScreenViewModel: ObservableObject {
     @Published private(set) var autoConnectLastKnownHostOnLaunch: Bool
     @Published private(set) var showSignalIndicators: Bool
     @Published private(set) var relayPort: Int
+    @Published private(set) var shutdownErrorMessage: String?
+    @Published private(set) var powerOnConnectPhase: PowerOnConnectPhase = .idle
+
+    let homeKitSmartPlugService: HomeKitSmartPlugService
 
     private let controllerMode: MixerControllerFactory.ControllerMode
     private let transportMode: MixerTransportMode
     private let controller: MixerController
     private let userDefaults: UserDefaults
+    private let shutdownCoordinator: MixerShutdownCoordinator
     private var cancellables = Set<AnyCancellable>()
     private var discoveryTask: Task<Void, Never>?
     private var launchAutoConnectHost: String?
     private var connectionToRestoreAfterBackground: MixerEndpoint?
     private var foregroundReconnectTask: Task<Void, Never>?
+    private var powerOnConnectTask: Task<Void, Never>?
     private var isApplicationActive = true
     private var hasStartedInitialConnectionFlow = false
 
@@ -46,12 +69,23 @@ final class MixerScreenViewModel: ObservableObject {
         transportMode: MixerTransportMode,
         controller: MixerController,
         userDefaults: UserDefaults = .standard,
-        startInitialConnectionFlow: Bool = true
+        startInitialConnectionFlow: Bool = true,
+        homeKitSmartPlugService: HomeKitSmartPlugService? = nil,
+        shutdownSleep: @escaping MixerShutdownCoordinator.Sleep = { duration in
+            try await Task.sleep(for: duration)
+        }
     ) {
+        let resolvedHomeKitService = homeKitSmartPlugService ?? HomeKitSmartPlugService(userDefaults: userDefaults)
         self.controllerMode = controllerMode
         self.transportMode = transportMode
         self.controller = controller
         self.userDefaults = userDefaults
+        self.homeKitSmartPlugService = resolvedHomeKitService
+        shutdownCoordinator = MixerShutdownCoordinator(
+            controller: controller,
+            powerController: resolvedHomeKitService,
+            sleep: shutdownSleep
+        )
         host = Self.loadStoredHost(from: userDefaults, transportMode: transportMode) ?? ""
         channels = controller.channels
         connectionState = controller.connectionState
@@ -64,6 +98,7 @@ final class MixerScreenViewModel: ObservableObject {
         autoConnectLastKnownHostOnLaunch = Self.loadAutoConnectLastKnownHostOnLaunch(from: userDefaults)
         showSignalIndicators = Self.loadShowSignalIndicators(from: userDefaults)
         relayPort = Self.loadRelayPort(from: userDefaults)
+        shutdownErrorMessage = nil
 
         controller.channelsPublisher
             .receive(on: DispatchQueue.main)
@@ -195,6 +230,40 @@ final class MixerScreenViewModel: ObservableObject {
         connectionState.phase == .connected
     }
 
+    var isPowerOnConnectActive: Bool {
+        powerOnConnectPhase.isActive
+    }
+
+    var powerOnConnectButtonTitle: String {
+        switch powerOnConnectPhase {
+        case .checkingPower:
+            "Checking Power…"
+        case .poweringOn:
+            "Powering On…"
+        case .waitingForMixer:
+            "Waiting for Mixer…"
+        case .failed:
+            "Try Again"
+        case .idle:
+            homeKitSmartPlugService.selectedPlugIsOn == false ? "Start Mixer" : "Connect"
+        }
+    }
+
+    var powerOnConnectStatusMessage: String? {
+        switch powerOnConnectPhase {
+        case .idle:
+            nil
+        case .checkingPower:
+            "Checking the smart plug before connecting…"
+        case .poweringOn:
+            "Turning on the mixer smart plug…"
+        case let .waitingForMixer(attempt):
+            "Mixer is starting. Connection attempt \(attempt)…"
+        case let .failed(message):
+            message
+        }
+    }
+
     var isFaderWaveAvailable: Bool {
         faderWaveState.phase == .ready
     }
@@ -259,27 +328,37 @@ final class MixerScreenViewModel: ObservableObject {
     }
 
     func toggleConnection(relayPortOverride: Int? = nil) {
+        cancelPowerOnAndConnect(disconnectTransport: false)
         switch connectionState.phase {
         case .connected, .connecting:
             cancelBackgroundConnectionRestoration()
             controller.disconnect()
         case .disconnected, .error:
-            let connectionHost = host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? rememberedHost ?? host
-                : host
-            let port: Int
-            if transportMode == .relay, let relayPortOverride {
-                port = relayPortOverride
-            } else {
-                port = currentPort
-            }
+            let endpoint = resolvedConnectionEndpoint(relayPortOverride: relayPortOverride)
             Task {
-                await controller.connect(to: MixerEndpoint(host: connectionHost, port: port))
+                await controller.connect(to: endpoint)
             }
         }
     }
 
+    func powerOnAndConnect(relayPortOverride: Int? = nil) {
+        guard !isPowerOnConnectActive else { return }
+
+        stopScanningForMixer()
+        let endpoint = resolvedConnectionEndpoint(relayPortOverride: relayPortOverride)
+        powerOnConnectTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.powerOnConnectTask = nil }
+            await self.runPowerOnAndConnect(to: endpoint)
+        }
+    }
+
+    func cancelPowerOnAndConnect() {
+        cancelPowerOnAndConnect(disconnectTransport: true)
+    }
+
     func disconnectCurrentSession() {
+        cancelPowerOnAndConnect(disconnectTransport: false)
         stopScanningForMixer()
         cancelBackgroundConnectionRestoration()
         controller.disconnect()
@@ -306,6 +385,7 @@ final class MixerScreenViewModel: ObservableObject {
     /// the exact endpoint that was active before the app went into background.
     func applicationDidBecomeActive() {
         isApplicationActive = true
+        homeKitSmartPlugService.applicationDidBecomeActive()
         startInitialConnectionFlowIfNeeded()
         scheduleForegroundReconnectIfNeeded()
     }
@@ -378,10 +458,19 @@ final class MixerScreenViewModel: ObservableObject {
     }
 
     func shutdownMixer() {
+        cancelPowerOnAndConnect(disconnectTransport: false)
         cancelBackgroundConnectionRestoration()
         Task {
-            await controller.shutdownMixer()
+            do {
+                _ = try await shutdownCoordinator.shutdown()
+            } catch {
+                shutdownErrorMessage = error.localizedDescription
+            }
         }
+    }
+
+    func clearShutdownError() {
+        shutdownErrorMessage = nil
     }
 
     func setConfirmBeforeShutdown(_ isEnabled: Bool) {
@@ -435,6 +524,111 @@ final class MixerScreenViewModel: ObservableObject {
         discoveryTask?.cancel()
         discoveryTask = nil
         discoveryState = .idle
+    }
+
+    private func runPowerOnAndConnect(to endpoint: MixerEndpoint) async {
+        powerOnConnectPhase = .checkingPower
+
+        guard let isPlugOn = await homeKitSmartPlugService.refreshSelectedPlugPowerState() else {
+            powerOnConnectPhase = .failed(
+                homeKitSmartPlugService.errorMessage ?? "The smart plug power state could not be checked."
+            )
+            return
+        }
+
+        guard !Task.isCancelled else { return }
+
+        if !isPlugOn {
+            powerOnConnectPhase = .poweringOn
+            do {
+                try await homeKitSmartPlugService.updateSelectedPlugPower(true)
+            } catch {
+                powerOnConnectPhase = .failed("Could not turn on the mixer smart plug. \(error.localizedDescription)")
+                return
+            }
+        }
+
+        guard !Task.isCancelled else { return }
+
+        let deadline = ContinuousClock.now.advanced(by: .seconds(90))
+        var attempt = 0
+
+        while !Task.isCancelled, ContinuousClock.now < deadline {
+            attempt += 1
+            powerOnConnectPhase = .waitingForMixer(attempt: attempt)
+            await controller.connect(to: endpoint)
+
+            if await waitForConnectionOutcome(timeout: .seconds(8)) {
+                powerOnConnectPhase = .idle
+                return
+            }
+
+            guard !Task.isCancelled else { return }
+            if ContinuousClock.now >= deadline {
+                break
+            }
+            do {
+                try await Task.sleep(for: .seconds(2))
+            } catch {
+                return
+            }
+        }
+
+        if !Task.isCancelled {
+            powerOnConnectPhase = .failed(
+                "The smart plug is on, but the mixer did not become available within 90 seconds."
+            )
+        }
+    }
+
+    private func waitForConnectionOutcome(timeout: Duration) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+
+        while !Task.isCancelled, ContinuousClock.now < deadline {
+            switch connectionState.phase {
+            case .connected:
+                return true
+            case .error:
+                return false
+            case .disconnected where connectionState.message != "Disconnected":
+                return false
+            case .connecting, .disconnected:
+                break
+            }
+
+            do {
+                try await Task.sleep(for: .milliseconds(250))
+            } catch {
+                return false
+            }
+        }
+
+        return connectionState.phase == .connected
+    }
+
+    private func cancelPowerOnAndConnect(disconnectTransport: Bool) {
+        let wasActive = isPowerOnConnectActive
+        powerOnConnectTask?.cancel()
+        powerOnConnectTask = nil
+        powerOnConnectPhase = .idle
+
+        if disconnectTransport,
+           wasActive,
+           (connectionState.phase == .connecting || connectionState.phase == .error) {
+            controller.disconnect()
+        }
+    }
+
+    private func resolvedConnectionEndpoint(relayPortOverride: Int?) -> MixerEndpoint {
+        let connectionHost = host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? rememberedHost ?? host
+            : host
+        let port = if transportMode == .relay, let relayPortOverride {
+            relayPortOverride
+        } else {
+            currentPort
+        }
+        return MixerEndpoint(host: connectionHost, port: port)
     }
 
     private func visibleChannels(for surface: MixerLayoutSurface) -> [MixerChannelState] {
@@ -579,6 +773,17 @@ final class MixerScreenViewModel: ObservableObject {
             return
         }
 
+        Task { @MainActor [weak self] in
+            await self?.runInitialConnectionFlow()
+        }
+    }
+
+    private func runInitialConnectionFlow() async {
+        if homeKitSmartPlugService.hasSelectedPlug,
+           await homeKitSmartPlugService.refreshSelectedPlugPowerState() == false {
+            return
+        }
+
         let rememberedEndpoint = Self.loadRememberedEndpoint(from: userDefaults, transportMode: transportMode)
 
         guard autoConnectLastKnownHostOnLaunch else {
@@ -590,18 +795,7 @@ final class MixerScreenViewModel: ObservableObject {
 
         launchAutoConnectHost = rememberedEndpoint.host
         host = rememberedEndpoint.host
-
-        Task { @MainActor [weak self] in
-            guard let self else {
-                return
-            }
-
-            if self.transportMode == .relay {
-                await self.controller.connect(to: rememberedEndpoint)
-            } else {
-                await self.controller.connect(to: rememberedEndpoint)
-            }
-        }
+        await controller.connect(to: rememberedEndpoint)
     }
 
     private func startDiscoveryFallbackIfNeeded(for state: MixerConnectionState) {
@@ -640,6 +834,11 @@ final class MixerScreenViewModel: ObservableObject {
             if let discoveredHost = await discovery.discoverMixer(preferredHost: preferredHost) {
                 self.host = discoveredHost
                 if self.autoConnectAfterDiscovery {
+                    if self.homeKitSmartPlugService.hasSelectedPlug,
+                       await self.homeKitSmartPlugService.refreshSelectedPlugPowerState() == false {
+                        self.discoveryState = .found(discoveredHost)
+                        return
+                    }
                     self.discoveryState = .idle
                     await self.controller.connect(to: MixerEndpoint(host: discoveredHost))
                 } else {
@@ -698,6 +897,12 @@ final class MixerScreenViewModel: ObservableObject {
         foregroundReconnectTask = Task { @MainActor [weak self] in
             guard let self else { return }
             defer { self.foregroundReconnectTask = nil }
+
+            if self.homeKitSmartPlugService.hasSelectedPlug,
+               await self.homeKitSmartPlugService.refreshSelectedPlugPowerState() == false {
+                self.connectionToRestoreAfterBackground = nil
+                return
+            }
 
             // Give Network.framework a moment to deliver any state transition
             // queued while the process was suspended.

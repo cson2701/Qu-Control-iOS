@@ -67,14 +67,14 @@ final class QuRelayMixerController: MixerController {
         }
     }
 
-    func shutdownMixer() async {
+    func shutdownMixer() async throws {
         guard connectionState.phase == .connected else {
             storedConnectionState = MixerConnectionState(
                 phase: .error,
                 message: "Shutdown unavailable: Connect to a mixer first",
                 endpoint: relayEndpoint
             )
-            return
+            throw MixerShutdownCommandError.notConnected
         }
 
         let endpoint = relayEndpoint
@@ -88,6 +88,7 @@ final class QuRelayMixerController: MixerController {
             )
         } catch {
             await handleConnectionFailure(error, endpoint: endpoint, prefix: "Shutdown failed")
+            throw MixerShutdownCommandError.commandFailed(error.localizedDescription)
         }
     }
 
