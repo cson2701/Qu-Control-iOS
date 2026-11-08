@@ -34,6 +34,7 @@ enum ConnectionModeOption: String, CaseIterable, Equatable, Identifiable {
 
 struct SettingsView: View {
     @ObservedObject var viewModel: MixerScreenViewModel
+    @ObservedObject var homeKitService: HomeKitSmartPlugService
     let isUsingMockConnection: Bool
     let transportMode: MixerTransportMode
     let onApplyConnectionMode: (ConnectionModeOption) -> Void
@@ -46,12 +47,14 @@ struct SettingsView: View {
 
     init(
         viewModel: MixerScreenViewModel,
+        homeKitService: HomeKitSmartPlugService,
         isUsingMockConnection: Bool,
         transportMode: MixerTransportMode,
         onApplyConnectionMode: @escaping (ConnectionModeOption) -> Void,
         onResetApp: @escaping () -> Void
     ) {
         self.viewModel = viewModel
+        _homeKitService = ObservedObject(wrappedValue: homeKitService)
         self.isUsingMockConnection = isUsingMockConnection
         self.transportMode = transportMode
         self.onApplyConnectionMode = onApplyConnectionMode
@@ -121,6 +124,96 @@ struct SettingsView: View {
 
                 Section {
                     Toggle(
+                        "Turn off smart plug after shutdown",
+                        isOn: Binding(
+                            get: { homeKitService.isAutomaticPowerOffEnabled },
+                            set: homeKitService.setAutomaticPowerOffEnabled(_:)
+                        )
+                    )
+
+                    if homeKitService.isAutomaticPowerOffEnabled {
+                        if homeKitService.isLoading {
+                            HStack {
+                                Text("Loading smart plugs")
+                                Spacer()
+                                ProgressView()
+                            }
+                        } else {
+                            Picker(
+                                "Smart plug",
+                                selection: Binding(
+                                    get: { homeKitService.selectedPlugID },
+                                    set: homeKitService.selectPlug(withID:)
+                                )
+                            ) {
+                                Text("Select a plug").tag(String?.none)
+                                if let selectedPlugID = homeKitService.selectedPlugID,
+                                   !homeKitService.availablePlugs.contains(where: { $0.id == selectedPlugID }) {
+                                    Text("\(homeKitService.selectedPlugName ?? "Selected plug") (Unavailable)")
+                                        .tag(Optional(selectedPlugID))
+                                }
+                                ForEach(homeKitService.availablePlugs) { plug in
+                                    VStack(alignment: .leading) {
+                                        Text(plug.name)
+                                        if !plug.location.isEmpty {
+                                            Text(plug.location)
+                                        }
+                                    }
+                                    .tag(Optional(plug.id))
+                                }
+                            }
+
+                            Button("Refresh Smart Plugs") {
+                                homeKitService.loadPlugs()
+                            }
+                        }
+
+                        if homeKitService.hasSelectedPlug {
+                            HStack {
+                                Toggle(
+                                    "Manual plug power",
+                                    isOn: Binding(
+                                        get: { homeKitService.selectedPlugIsOn ?? false },
+                                        set: homeKitService.setSelectedPlugPower(_:)
+                                    )
+                                )
+                                .disabled(
+                                    homeKitService.selectedPlugIsOn == nil
+                                        || homeKitService.isUpdatingPlugPower
+                                )
+
+                                if homeKitService.isUpdatingPlugPower {
+                                    ProgressView()
+                                }
+                            }
+                        }
+
+                        Stepper(
+                            "Power-off delay: \(homeKitService.delaySeconds) sec",
+                            value: Binding(
+                                get: { homeKitService.delaySeconds },
+                                set: homeKitService.setDelaySeconds(_:)
+                            ),
+                            in: 0 ... 5,
+                            step: 1
+                        )
+
+                        if let errorMessage = homeKitService.errorMessage {
+                            Text(errorMessage)
+                                .foregroundStyle(.red)
+                        } else {
+                            Text(homeKitService.authorizationDescription)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } header: {
+                    Text("HomeKit Power")
+                } footer: {
+                    Text("After the mixer accepts its shutdown command, Qu Controller waits for the selected delay before turning off the plug. The plug stays on if the mixer command fails.")
+                }
+
+                Section {
+                    Toggle(
                         "Show signal indicators",
                         isOn: Binding(
                             get: { viewModel.showSignalIndicators },
@@ -148,6 +241,11 @@ struct SettingsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .onDisappear {
                 applyDraftConnectionModeIfNeeded()
+            }
+            .onAppear {
+                if homeKitService.isAutomaticPowerOffEnabled || homeKitService.hasSelectedPlug {
+                    homeKitService.loadPlugs()
+                }
             }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {

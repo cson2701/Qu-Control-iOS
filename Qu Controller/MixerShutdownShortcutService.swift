@@ -10,20 +10,30 @@ import Foundation
 final class MixerShutdownShortcutService {
     struct Result: Equatable {
         let host: String
+        let didTurnOffPlug: Bool
     }
 
     private let userDefaults: UserDefaults
     private let controllerFactory: @MainActor () -> MixerController
+    private let powerController: PostShutdownPowerControlling
 
     init(
         userDefaults: UserDefaults = .standard,
         controllerFactory: @escaping @MainActor () -> MixerController = {
             MixerControllerFactory.makeMixerController(mode: MixerControllerFactory.currentControllerMode())
+        },
+        powerController: PostShutdownPowerControlling? = nil,
+        shutdownSleep: @escaping MixerShutdownCoordinator.Sleep = { duration in
+            try await Task.sleep(for: duration)
         }
     ) {
         self.userDefaults = userDefaults
         self.controllerFactory = controllerFactory
+        self.powerController = powerController ?? HomeKitSmartPlugService(userDefaults: userDefaults)
+        self.shutdownSleep = shutdownSleep
     }
+
+    private let shutdownSleep: MixerShutdownCoordinator.Sleep
 
     func shutdownMixerUsingRememberedHost() async throws -> Result {
         let controller = controllerFactory()
@@ -50,19 +60,19 @@ final class MixerShutdownShortcutService {
 
         remember(endpoint)
 
-        await controller.shutdownMixer()
-        let shutdownState = controller.connectionState
-
-        if shutdownState.phase == .disconnected,
-           shutdownState.message.contains("Shutdown command sent") {
-            return Result(host: endpoint.host)
+        let coordinator = MixerShutdownCoordinator(
+            controller: controller,
+            powerController: powerController,
+            sleep: shutdownSleep
+        )
+        do {
+            let result = try await coordinator.shutdown()
+            return Result(host: endpoint.host, didTurnOffPlug: result.didTurnOffPlug)
+        } catch let error as MixerShutdownSequenceError {
+            throw ShortcutShutdownError.powerOffFailed(host: endpoint.host, message: error.localizedDescription)
+        } catch {
+            throw ShortcutShutdownError.shutdownFailed(host: endpoint.host, message: error.localizedDescription)
         }
-
-        if shutdownState.phase == .error {
-            throw ShortcutShutdownError.shutdownFailed(host: endpoint.host, message: shutdownState.message)
-        }
-
-        throw ShortcutShutdownError.shutdownFailed(host: endpoint.host, message: shutdownState.message)
     }
 
     private func waitForConnectionOutcome(
@@ -147,6 +157,7 @@ enum ShortcutShutdownError: LocalizedError {
     case noRememberedHost
     case connectionFailed(host: String, message: String)
     case shutdownFailed(host: String, message: String)
+    case powerOffFailed(host: String, message: String)
 
     var errorDescription: String? {
         switch self {
@@ -156,6 +167,8 @@ enum ShortcutShutdownError: LocalizedError {
             "Could not connect to \(host). \(message)"
         case let .shutdownFailed(host, message):
             "Connected to \(host), but shutdown failed. \(message)"
+        case let .powerOffFailed(host, message):
+            "The mixer at \(host) received its shutdown command, but HomeKit power-off failed. \(message)"
         }
     }
 }

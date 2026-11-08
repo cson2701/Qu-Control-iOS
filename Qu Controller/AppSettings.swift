@@ -13,6 +13,12 @@ enum AppSettingsKey {
     static let showSignalIndicators = "settings.showSignalIndicators"
     static let faderWaveCycles = "settings.faderWave.cycles"
     static let faderWaveSpeed = "settings.faderWave.speed"
+    static let homeKitPowerOffEnabled = "settings.homeKit.powerOffEnabled"
+    static let homeKitShutdownDelaySeconds = "settings.homeKit.shutdownDelaySeconds"
+    static let homeKitHomeIdentifier = "settings.homeKit.homeIdentifier"
+    static let homeKitAccessoryIdentifier = "settings.homeKit.accessoryIdentifier"
+    static let homeKitServiceIdentifier = "settings.homeKit.serviceIdentifier"
+    static let homeKitPlugName = "settings.homeKit.plugName"
 }
 
 enum AppSettings {

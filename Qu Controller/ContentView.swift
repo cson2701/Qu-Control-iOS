@@ -11,6 +11,7 @@ import UIKit
 
 struct ContentView: View {
     @ObservedObject var viewModel: MixerScreenViewModel
+    @ObservedObject private var homeKitService: HomeKitSmartPlugService
     let isUsingMockConnection: Bool
     let transportMode: MixerTransportMode
     let onApplyConnectionMode: (ConnectionModeOption) -> Void
@@ -33,6 +34,7 @@ struct ContentView: View {
         onResetApp: @escaping () -> Void
     ) {
         self.viewModel = viewModel
+        _homeKitService = ObservedObject(wrappedValue: viewModel.homeKitSmartPlugService)
         self.isUsingMockConnection = isUsingMockConnection
         self.transportMode = transportMode
         self.onApplyConnectionMode = onApplyConnectionMode
@@ -74,6 +76,7 @@ struct ContentView: View {
         .sheet(isPresented: $isShowingSettings) {
             SettingsView(
                 viewModel: viewModel,
+                homeKitService: homeKitService,
                 isUsingMockConnection: isUsingMockConnection,
                 transportMode: transportMode,
                 onApplyConnectionMode: onApplyConnectionMode,
@@ -91,6 +94,23 @@ struct ContentView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This powers off the connected Qu mixer and may require a hard power reset to turn it back on.")
+        }
+        .alert(
+            "Shutdown Incomplete",
+            isPresented: Binding(
+                get: { viewModel.shutdownErrorMessage != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        viewModel.clearShutdownError()
+                    }
+                }
+            )
+        ) {
+            Button("OK") {
+                viewModel.clearShutdownError()
+            }
+        } message: {
+            Text(viewModel.shutdownErrorMessage ?? "The shutdown sequence did not complete.")
         }
         .confirmationDialog(
             "Start Fader Wave?",
@@ -187,6 +207,10 @@ struct ContentView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
+                if homeKitService.hasSelectedPlug && !isUsingMockConnection {
+                    mixerPowerCard
+                }
+
                 VStack(alignment: .leading, spacing: 12) {
                     Text(transportMode == .direct ? "Mixer IP address" : "Relay IP address")
                         .font(.headline)
@@ -223,15 +247,29 @@ struct ContentView: View {
                             .foregroundStyle(.secondary)
                     }
                 
-                    HStack(spacing: 12) {
-                        Button(chromeModel.buttonTitle) {
-                            viewModel.toggleConnection(relayPortOverride: resolvedRelayPortOverride)
+                    VStack(spacing: 12) {
+                        Button {
+                            if homeKitService.hasSelectedPlug,
+                               chromeModel.connectionState.phase != .connected,
+                               chromeModel.connectionState.phase != .connecting {
+                                viewModel.powerOnAndConnect(relayPortOverride: resolvedRelayPortOverride)
+                            } else {
+                                viewModel.toggleConnection(relayPortOverride: resolvedRelayPortOverride)
+                            }
+                        } label: {
+                            primaryConnectionButtonLabel
+                                .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.borderedProminent)
-                        .frame(maxWidth: .infinity)
-                        .disabled(isPrimaryActionDisabled)
+                        .disabled(isPrimaryActionDisabled || viewModel.isPowerOnConnectActive)
 
-                        if chromeModel.supportsAutoDiscovery || chromeModel.isScanningForMixer {
+                        if viewModel.isPowerOnConnectActive {
+                            Button("Cancel") {
+                                viewModel.cancelPowerOnAndConnect()
+                            }
+                            .buttonStyle(.bordered)
+                            .frame(maxWidth: .infinity)
+                        } else if chromeModel.supportsAutoDiscovery || chromeModel.isScanningForMixer {
                             Button(viewModel.scanButtonTitle) {
                                 if chromeModel.isScanningForMixer {
                                     viewModel.stopScanningForMixer()
@@ -248,8 +286,8 @@ struct ContentView: View {
 
                 ConnectionStatusCard(
                     title: "Status",
-                    message: chromeModel.statusMessage,
-                    phase: chromeModel.connectionState.phase,
+                    message: viewModel.powerOnConnectStatusMessage ?? chromeModel.statusMessage,
+                    phase: viewModel.isPowerOnConnectActive ? .connecting : chromeModel.connectionState.phase,
                     isScanning: chromeModel.isScanningForMixer
                 )
             }
@@ -258,6 +296,129 @@ struct ContentView: View {
             .frame(maxWidth: .infinity)
         }
         .background(Color(.systemGroupedBackground))
+    }
+
+    private var mixerPowerCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Mixer Power", systemImage: "powerplug")
+                    .font(.headline)
+
+                Spacer()
+
+                if homeKitService.isLoading || homeKitService.isUpdatingPlugPower {
+                    ProgressView()
+                }
+            }
+
+            HStack {
+                Text(homeKitService.selectedPlugName ?? "Smart plug")
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Text(smartPlugPowerStatus)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(smartPlugPowerStatusColor)
+            }
+
+            if let errorMessage = homeKitService.errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            } else {
+                Text(smartPlugPowerHelpText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(16)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .onAppear {
+            homeKitService.loadPlugs()
+        }
+    }
+
+    private var primaryConnectionButtonTitle: String {
+        guard homeKitService.hasSelectedPlug,
+              chromeModel.connectionState.phase != .connected,
+              chromeModel.connectionState.phase != .connecting else {
+            return chromeModel.buttonTitle
+        }
+        return viewModel.powerOnConnectButtonTitle
+    }
+
+    @ViewBuilder
+    private var primaryConnectionButtonLabel: some View {
+        if homeKitService.hasSelectedPlug,
+           chromeModel.connectionState.phase != .connected,
+           chromeModel.connectionState.phase != .connecting {
+            VStack(spacing: 2) {
+                Text(primaryConnectionButtonTitle)
+                    .font(.headline)
+
+                if !viewModel.isPowerOnConnectActive {
+                    Text(primaryConnectionButtonSubtitle)
+                        .font(.caption)
+                        .opacity(0.85)
+                }
+            }
+            .padding(.vertical, 2)
+        } else {
+            Text(primaryConnectionButtonTitle)
+        }
+    }
+
+    private var primaryConnectionButtonSubtitle: String {
+        if case .failed = viewModel.powerOnConnectPhase {
+            return "Power on and connect"
+        }
+
+        switch homeKitService.selectedPlugIsOn {
+        case false:
+            return "Power on and connect"
+        case true:
+            return "Connect to mixer"
+        case nil:
+            return "Check power and connect"
+        }
+    }
+
+    private var smartPlugPowerStatus: String {
+        if homeKitService.isLoading {
+            return "Checking…"
+        }
+        switch homeKitService.selectedPlugIsOn {
+        case true:
+            return "On"
+        case false:
+            return "Off"
+        case nil:
+            return "Unavailable"
+        }
+    }
+
+    private var smartPlugPowerStatusColor: Color {
+        switch homeKitService.selectedPlugIsOn {
+        case true:
+            return .green
+        case false:
+            return .secondary
+        case nil:
+            return .orange
+        }
+    }
+
+    private var smartPlugPowerHelpText: String {
+        switch homeKitService.selectedPlugIsOn {
+        case true:
+            return "The mixer has power and is ready to connect."
+        case false:
+            return "Power On & Connect will start the mixer and wait for it automatically."
+        case nil:
+            return "The plug state must be available before connecting."
+        }
     }
 
     private var hostBinding: Binding<String> {

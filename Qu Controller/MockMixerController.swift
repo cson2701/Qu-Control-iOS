@@ -87,7 +87,7 @@ final class MockMixerController: MixerController {
         )
     }
 
-    func shutdownMixer() async {
+    func shutdownMixer() async throws {
         faderWaveTask?.cancel()
         faderWaveTask = nil
         storedFaderWaveState = .disconnected
